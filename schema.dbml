@@ -72,6 +72,11 @@ Table DM_juegos {
   Note: 'Sistemas de rol que cada DM maneja (M:N).'
 }
 
+Table DM_premisas {
+  id_dm integer [ref: >DM.id ]
+  id_premisa integer [ref:> premisa.id]
+}
+
 
 Table PJ {
   id            integer       [pk, increment, note: 'Identificador de la Persona Jugadora']
@@ -122,6 +127,9 @@ Table personas {
   id_master     integer       [ref: - DM.id, null,
                                 note: '1:1 — perfil de máster (null si no dirige)']
   // TODO comprender identificar y documentar el contenido del filtro_contenido
+  // Líneas no se admite ni baja sugerencia. 
+  // Velos, puede no ocurrir en la escena, no se puede descubrir. 
+  // Podríamos tener una tabla de conceptos a incluir. 
   filtro_contenido jsonb      [note: '{ "lineas": [...], "velos": [...] } ']
   // TODO entender este campo, ¿es un "aceptados términos y condiciones"?
   aceptada_normas  boolean    [default: false, note: 'Onboarding / mensaje de bienvenida']
@@ -130,6 +138,17 @@ Table personas {
   Note: 'Identidad real con cuenta de Telegram. Puede tener PJ y/o DM.'
 }
 
+Table limites {
+  id integer [pk, increment]
+  palabra_clave varchar [ note: 'Palabra que define de forma genérica el límite. Por ejemplo: arañas, maltrato_animal, maltrato infantil, orfandad ...']
+  descripción varchar [note: 'Una descripción más extensa para evitar ambiguedades']
+}
+
+Table limites_sesion {
+  id integer [pk, increment]
+  id_sesion 
+  id_limite
+}
 
 Table premisa {
   id                  integer       [pk, increment]
@@ -153,7 +172,7 @@ Table campania {
   id_premisa    integer       [ref: > premisa.id, not null, note: 'Si pertenece a una o permisa']
   id_dm         integer       [ref: > DM.id, not null, note: 'Máster que dirige esta campania']
   periodicidad  varchar(20)   [note: 'semanal | quincenal | mensual | irregular']
-  plazas int          [default: null, note: 'Pueden definirse por campaña o por sesión'
+  plazas int          [default: null, note: 'Pueden definirse por campaña o por sesión' ]
   fecha_inicio  date
   finalizada    boolean       [not null, default: false]
   cancelada     boolean       [not null, default: false]
@@ -194,7 +213,7 @@ Table sesion {
   numero              integer   [note: 'Orden dentro de la premisa/campania, si aplica']
   fecha               date      [not null, note: 'Sábado no festivo']
   plazas_totales      integer   [not null, default: 5, note: '1..6']
-  plazas_sin_reserva  integer   [not null, default: 1, note: '0..plazas_totales/2; bloqueadas a la inscripción normal']
+  plazas_sin_reserva  integer   [not null, default: 1, note: '0..plazas_totales/2; bloqueadas a la inscripción normal, para permitir que personas que aparecen espontáneamente en la sala se unan']
   created_at          timestamp [default: `now()`]
 
   indexes {
