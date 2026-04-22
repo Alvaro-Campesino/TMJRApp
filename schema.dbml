@@ -1,0 +1,260 @@
+// ============================================================
+// TMJRApp — Esquema de base de datos
+// Formato: DBML (dbdiagram.io) — pégalo en https://dbdiagram.io/d
+// ============================================================
+//
+// Tablas:
+//   juegos               — catálogo de sistemas de rol
+//   DM                   — perfil de máster
+//   DM_juegos            — sistemas que conoce cada DM (M:N)
+//   PJ                   — persona jugadora
+//   PJ_juegos_preferidos — sistemas preferidos por cada PJ (M:N)
+//   PJ_juegos_conocidos  — sistemas que conoce cada PJ (M:N)
+//   personas             — identidad de Telegram + vínculo a PJ y DM
+//   premisa              — concepto/título (solo idea: nombre, sistema, descripción, aviso)
+//   campania             — instancia en curso de una premisa (grupo fijo, periodicidad)
+//   campania_pjs_fijos   — PJs fijos de una campania (M:N)
+//   sesion               — fecha concreta de juego; es la que tiene DM y plazas
+//   sesion_pj            — join N:M entre sesion y PJ (asistencia y +1/-1)
+//   pjs_en_espera        — PJs en lista de espera para una sesión llena
+//
+// Convenciones:
+//   - premisa NO tiene DM, NI jugadores, NI estado finalizada.
+//     Es solo el concepto/idea. El DM y las plazas viven en sesion.
+//   - Para saber si una sesion ya pasó → sesion.fecha < CURRENT_DATE.
+//     Una campania entera se cierra con campania.finalizada = true.
+//   - plazas_fuera_tg NO es una columna: las plazas ocupadas por personas sin Telegram
+//     son los +1/-1 registrados como sesion_pj.acompanantes. Total por sesión:
+//       SUM(sesion_pj.acompanantes) WHERE id_sesion = ?.
+//   - plazas_ocupadas no se almacena: se deriva de
+//       Σ (1 + sesion_pj.acompanantes) por sesion.
+//   - filtro_contenido vive en personas (es preferencia de persona).
+//   - Invariante de plazas por sesión:
+//       Σ (1 + sesion_pj.acompanantes) ≤ sesion.plazas_totales
+//   - Al crear una sesion de una campania, se materializan automáticamente los
+//     campania_pjs_fijos en sesion_pj. Cada PJ puede borrarse de esa sesión luego.
+// ============================================================
+
+
+Table juegos {
+  id            integer       [pk, increment]
+  nombre        varchar(100)  [not null, unique, note: 'Sistema de rol: D&D 5e, Vampire, Blades in the Dark, etc.']
+  descripcion   text
+  created_at    timestamp     [default: `now()`]
+
+  Note: 'Catálogo de sistemas de rol.'
+}
+
+
+Table DM {
+  id            integer       [pk, increment]
+  biografia     text
+  // TODO: ¿más atributos? (experiencia, enlaces, avatar, disponibilidad)
+  created_at    timestamp     [default: `now()`]
+
+  Note: '''
+    Perfil de máster.
+    - Una persona (personas.id_master) referencia a uno de estos.
+    - Los sistemas que conoce se enlazan vía DM_juegos.
+    - Su id se usa en sesion.id_dm y campania.id_dm.
+  '''
+}
+
+
+Table DM_juegos {
+  id_dm         integer   [ref: > DM.id, not null]
+  id_juego      integer   [ref: > juegos.id, not null]
+
+  indexes {
+    (id_dm, id_juego) [pk]
+  }
+
+  Note: 'Sistemas de rol que cada DM maneja (M:N).'
+}
+
+
+Table PJ {
+  id            integer       [pk, increment, note: 'Identificador de la Persona Jugadora']
+  nombre        varchar(100)  [not null, note: 'Nombre a mostrar como Persona jugadora']
+  descripcion   text
+  // TODO: ¿más atributos? (avatar, notas)
+  created_at    timestamp     [default: `now()`]
+
+  Note: '''
+    Persona jugadora (identidad en su rol de jugadora).
+    - Relación 1:1 con personas (personas.id_pj).
+    - Aparece en sesion_pj, pjs_en_espera, campania_pjs_fijos.
+    - Sistemas preferidos / conocidos en PJ_juegos_preferidos / PJ_juegos_conocidos.
+  '''
+}
+
+
+Table PJ_juegos_preferidos {
+  id_pj         integer   [ref: > PJ.id, not null]
+  id_juego      integer   [ref: > juegos.id, not null]
+
+  indexes {
+    (id_pj, id_juego) [pk]
+  }
+
+  Note: 'Sistemas preferidos de cada PJ (M:N).'
+}
+
+
+Table PJ_juegos_conocidos {
+  id_pj         integer   [ref: > PJ.id, not null]
+  id_juego      integer   [ref: > juegos.id, not null]
+
+  indexes {
+    (id_pj, id_juego) [pk]
+  }
+
+  Note: 'Sistemas que cada PJ conoce aunque no sean sus favoritos (M:N).'
+}
+
+
+Table personas {
+  id            integer       [pk, increment]
+  telegram_id   bigint        [unique, not null, note: 'ID numérico de Telegram']
+  nombre        varchar(100)  [not null, note: 'Nombre a mostrar']
+  id_pj         integer       [ref: - PJ.id, null,
+                                note: '1:1 — perfil de jugadora (null si no juega)']
+  id_master     integer       [ref: - DM.id, null,
+                                note: '1:1 — perfil de máster (null si no dirige)']
+  // TODO comprender identificar y documentar el contenido del filtro_contenido
+  filtro_contenido jsonb      [note: '{ "lineas": [...], "velos": [...] } ']
+  // TODO entender este campo, ¿es un "aceptados términos y condiciones"?
+  aceptada_normas  boolean    [default: false, note: 'Onboarding / mensaje de bienvenida']
+  created_at    timestamp     [default: `now()`]
+
+  Note: 'Identidad real con cuenta de Telegram. Puede tener PJ y/o DM.'
+}
+
+
+Table premisa {
+  id                  integer       [pk, increment]
+  nombre              varchar(100)  [not null, note: 'Título, por ejemplo: "La maldición de Strahd"']
+  id_juego            integer       [ref: > juegos.id, note: 'Vincula con el juego de rol para el que está hecha la partida, puede ser null']
+  descripcion         varchar(400)
+  aviso_contenido     varchar(200)
+  created_at          timestamp     [default: `now()`]
+
+  Note: '''
+    Concepto / idea de partida: título
+    NO tiene DM, NI jugadores, NI estado finalizada.
+    La misma premisa puede jugarse varias veces (one-shot, aventura, campania)
+    por distintos DMs en distintas fechas.
+  '''
+}
+
+
+Table campania {
+  id            integer       [pk, increment]
+  id_premisa    integer       [ref: > premisa.id, not null, note: 'Si pertenece a una o permisa']
+  id_dm         integer       [ref: > DM.id, not null, note: 'Máster que dirige esta campania']
+  periodicidad  varchar(20)   [note: 'semanal | quincenal | mensual | irregular']
+  plazas int          [default: null, note: 'Pueden definirse por campaña o por sesión'
+  fecha_inicio  date
+  finalizada    boolean       [not null, default: false]
+  cancelada     boolean       [not null, default: false]
+  created_at    timestamp     [default: `now()`]
+
+  Note: '''
+    Instancia en curso de una premisa.
+    - Almacena el grupo fijo (campania_pjs_fijos).
+    - Da periodicidad para auto-generar sesiones.
+    - Se enlaza desde sesion.id_campania.
+    - Huecos actuales = (plazas_totales de su próxima sesion) − count(campania_pjs_fijos).
+  '''
+}
+
+
+Table campania_pjs_fijos {
+  id_campania   integer   [ref: > campania.id, not null]
+  id_pj         integer   [ref: > PJ.id, not null]
+  created_at    timestamp [default: `now()`]
+
+  indexes {
+    (id_campania, id_pj) [pk]
+  }
+
+  Note: '''
+    PJs fijos de una campania (M:N).
+    Al crear una nueva sesion de la campania, se copian automáticamente a sesion_pj.
+    Cada PJ puede luego borrarse de una sesion concreta sin salir de la campania.
+  '''
+}
+
+
+Table sesion {
+  id                  integer   [pk, increment]
+  id_premisa          integer   [ref: > premisa.id, null, note: 'Puede ser null (sesión suelta)']
+  id_campania         integer   [ref: > campania.id, null, note: 'Si pertenece a una campania']
+  id_dm               integer   [ref: > DM.id, not null, note: 'Máster que dirige esta sesión']
+  numero              integer   [note: 'Orden dentro de la premisa/campania, si aplica']
+  fecha               date      [not null, note: 'Sábado no festivo']
+  plazas_totales      integer   [not null, default: 5, note: '1..6']
+  plazas_sin_reserva  integer   [not null, default: 1, note: '0..plazas_totales/2; bloqueadas a la inscripción normal']
+  created_at          timestamp [default: `now()`]
+
+  indexes {
+    (id_premisa, numero) [unique, note: 'Aplica cuando id_premisa no es null']
+    fecha
+    id_campania
+  }
+
+  Note: '''
+    Fecha concreta de juego. Aquí vive el DM y las plazas (no en premisa).
+    Casos válidos:
+      - id_premisa + id_campania ambos null → sesión suelta (encuentro libre).
+      - id_premisa, id_campania null        → one-shot de esa premisa.
+      - id_premisa + id_campania            → sesión de campania en curso.
+    Se considera "pasada" cuando fecha < CURRENT_DATE.
+
+    Al crearse como parte de una campania, sesion_pj se inicializa automáticamente
+    con los campania_pjs_fijos.
+  '''
+}
+
+
+Table sesion_pj {
+  id            integer   [pk, increment]
+  id_sesion     integer   [ref: > sesion.id, not null]
+  id_pj         integer   [ref: > PJ.id, not null]
+  acompanantes  integer   [not null, default: 0,
+                           note: '+1/-1 en tarjeta: personas sin Telegram que trae este PJ.']
+  apuntada_en   timestamp [default: `now()`]
+
+  indexes {
+    (id_sesion, id_pj) [unique, note: 'Un PJ solo aparece una vez por sesión']
+    id_sesion
+  }
+
+  Note: '''
+    Participación efectiva en una sesion concreta.
+    Puede venir de un apuntarse manual o de la materialización de campania_pjs_fijos.
+  '''
+}
+
+
+Table pjs_en_espera {
+  id                  integer   [pk, increment]
+  id_pj               integer   [ref: > PJ.id, not null]
+  id_sesion           integer   [ref: > sesion.id, not null]
+  asistencia_segura   boolean   [not null, default: true,
+                                  note: '¿La PJ confirma asistencia al 100%? (del briefing)']
+  created_at          timestamp [default: `now()`]
+
+  indexes {
+    (id_pj, id_sesion) [unique, note: 'Una PJ solo puede estar una vez en espera por sesión']
+    id_sesion
+  }
+
+  Note: '''
+    Lista de espera por sesión. Una PJ entra aquí al intentar apuntarse a una sesión llena.
+    Cuando se libera un hueco en esa sesión:
+      1. Se toma la primera fila con asistencia_segura = true.
+      2. Se crea sesion_pj para esa sesion.
+      3. Se borra la fila de pjs_en_espera y se notifica a la PJ.
+  '''
+}
