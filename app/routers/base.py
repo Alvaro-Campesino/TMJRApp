@@ -5,20 +5,35 @@ import os
 from dotenv import load_dotenv
 
 load_dotenv()
-url = os.getenv('SUPABASE_SUPAFAST_URL')
-key = os.getenv('SUPABASE_SUPAFAST_KEY')
+url = os.getenv("SUPABASE_SUPAFAST_URL")
+key = os.getenv("SUPABASE_SUPAFAST_KEY")
 supabase: Client = create_client(url, key)
+
 
 def is_empty(model: BaseModel) -> bool:
     return model is None or model.data == []
 
+
 def get(id: int, table_name: str) -> BaseModel:
-    object = supabase.table(table_name).select('*').eq('id', id).execute()
-    if is_empty(object): return None
+    object = supabase.table(table_name).select("*").eq("id", id).execute()
+    if is_empty(object):
+        return None
     return object
+
 
 def not_found():
     raise HTTPException(status_code=404, detail=f"No existe.")
 
+
 def check_exists(id: int, table_name: str):
-    if get(id, table_name) is None: not_found()
+    if get(id, table_name) is None:
+        not_found()
+
+
+def check_limits(limit: int, offset: int):
+    if limit > 100:
+        raise HTTPException(
+            status_code=400, detail="El límite no puede ser mayor a 100"
+        )
+    if offset < 0:
+        raise HTTPException(status_code=400, detail="El offset no puede ser menor a 0")

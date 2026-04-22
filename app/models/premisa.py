@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+
 class Premisa(BaseModel):
     id: int
     created_at: str
@@ -8,6 +9,7 @@ class Premisa(BaseModel):
     descripcion: str | None = None
     aviso_contenido: str | None = None
     id_master: int
+
 
 class PremisaUpdate(Premisa):
     created_at: str | None = None

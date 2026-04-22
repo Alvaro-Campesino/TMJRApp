@@ -1,4 +1,17 @@
-cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\venv-supaFastApi\Scripts
+#Activar api
+cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\.venv\Scripts
 activate
-cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\venv-supaFastApi\app
+cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\app
 uvicorn main:app --reload
+
+#Activar bot
+cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\.venv\Scripts
+activate
+cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\bot
+py main.py
+
+# Esto era para ejecutar las dos cosas a la vez, pero no funca.
+# Comando para api
+& "C:/Users/Cristina/Documents/TMJR bot/supafast-api/.venv/Scripts/python.exe" "c:/Users/Cristina/Documents/TMJR bot/supafast-api/app/main.py"
+# Comando para bot
+& "C:/Users/Cristina/Documents/TMJR bot/supafast-api/.venv/Scripts/python.exe" "c:/Users/Cristina/Documents/TMJR bot/supafast-api/bot/main.py"

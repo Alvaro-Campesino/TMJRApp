@@ -1,5 +1,6 @@
 from pydantic import BaseModel
 
+
 class Aventura(BaseModel):
     id: int
     created_at: str
@@ -10,8 +11,8 @@ class Aventura(BaseModel):
     abierta_inscripcion: bool | None = None
     id_premisa: int
 
+
 class AventuraUpdate(Aventura):
-    created_at: str | None = None
     lugar: str | None = None
     plazas_totales: int | None = None
     plazas_sin_reserva: int | None = None
