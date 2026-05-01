@@ -1,0 +1,29 @@
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--ignore=tests/test_api_smoke.py",
+    "--ignore=tests/e2e",
+]
+markers = [
+    "smoke: integration smoke test que requiere `docker compose up`",
+    "e2e: end-to-end con testcontainers + lifespan + telegram mock (lento)",
+]
+
+[tool.coverage.run]
+branch = false
+source = ["tmjr"]
+omit = [
+    "tmjr/main.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+]
