@@ -11,10 +11,13 @@ from telegram.ext import (
     filters,
 )
 
+from tmjr.bot.publicador import publicar_sesion
 from tmjr.bot.states import UnirseSesion
 from tmjr.db import async_session_maker
+from tmjr.db.models import Sesion, Premisa
 from tmjr.services import personas as personas_svc
 from tmjr.services import sesiones as sesiones_svc
+from tmjr.bot.publicador import publicar_sesion
 
 END = ConversationHandler.END
 
@@ -45,7 +48,7 @@ async def _entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         if persona.id_pj is None:
             await context.bot.send_message(
                 chat_id=user.id,
-                text="Aún no tienes PJ. ¿Cómo se llama tu personaje?",
+                text="Aún no estás registrado como PJ. ¿Qué nombre quieres usar? \n _el nombre se mostrará en los chats_",
             )
             return UnirseSesion.PJ_NOMBRE
 
@@ -59,7 +62,7 @@ async def pj_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return UnirseSesion.PJ_NOMBRE
     context.user_data["pj_nombre"] = nombre[:100]
     await update.effective_message.reply_text(
-        "Una breve descripción del PJ (o /skip)."
+        "Si quieres puedes darnos una breve descripción sobre tí (o /skip)."
     )
     return UnirseSesion.PJ_DESC
 
@@ -84,14 +87,22 @@ async def _do_apuntar(
     async with async_session_maker() as session:
         try:
             await sesiones_svc.apuntar_pj(session, sesion_id=sesion_id, pj_id=pj_id)
+            sesion = await session.get(Sesion, sesion_id)
+            premisa = await session.get(Premisa, sesion.id_premisa)
+            jugadores = await sesiones_svc.nombre_pjs_en_sesion(session, sesion.id)
+            await publicar_sesion(context.bot, sesion, jugadores, premisa=premisa)
+
         except sesiones_svc.YaApuntadoError:
             msg = "Ya estabas apuntado a esta sesión."
         except sesiones_svc.SesionLlenaError:
             msg = "La sesión está llena."
         except ValueError as e:
             msg = f"Error: {e}"
+        except Exception as e:
+            msg = f"Error: {e}"
         else:
             msg = f"✅ Apuntado a la sesión #{sesion_id}."
+
 
     user = update.effective_user
     await context.bot.send_message(chat_id=user.id, text=msg)

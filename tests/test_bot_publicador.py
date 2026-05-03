@@ -7,18 +7,48 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from tmjr.bot import publicador
+from tmjr.bot.publicador import _formatear
 from tmjr.config import get_settings
-from tmjr.db.models import Sesion
+from tmjr.db.models import Premisa, Sesion
 
 
-def _sesion_demo() -> Sesion:
+def _sesion_demo(descripcion: str | None = None) -> Sesion:
     return Sesion(
         id=1,
         id_dm=10,
+        id_juego=1,
         fecha=date(2030, 4, 4),
         plazas_totales=4,
         plazas_sin_reserva=1,
+        descripcion=descripcion,
     )
+
+
+def _premisa_demo(descripcion: str | None = None) -> Premisa:
+    return Premisa(id=1, nombre="Maldición de Strahd", descripcion=descripcion)
+
+
+def test_formatear_sesion_sola_sin_descripcion():
+    txt = _formatear(_sesion_demo())
+    assert "Sesión #1" in txt
+    assert "📅 2030-04-04" in txt
+    # No hay línea de descripción
+    assert "_" not in txt or txt.count("_") == 0
+
+
+def test_formatear_usa_descripcion_de_premisa_si_sesion_sin():
+    txt = _formatear(_sesion_demo(), _premisa_demo("Aventura clásica"))
+    assert "Maldición de Strahd" in txt
+    assert "Aventura clásica" in txt
+
+
+def test_formatear_descripcion_de_sesion_sobreescribe_premisa():
+    txt = _formatear(
+        _sesion_demo("Nota específica de hoy"),
+        _premisa_demo("Aventura clásica"),
+    )
+    assert "Nota específica de hoy" in txt
+    assert "Aventura clásica" not in txt
 
 
 async def test_publicar_sesion_falla_sin_chat_id(monkeypatch):

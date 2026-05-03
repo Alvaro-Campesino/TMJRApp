@@ -5,8 +5,14 @@ from datetime import date
 
 import pytest
 
+from tmjr.services import juegos as juegos_svc
 from tmjr.services import personas as personas_svc
 from tmjr.services import sesiones as svc
+
+
+async def _juego(session, nombre: str = "JuegoTest") -> int:
+    j, _ = await juegos_svc.get_or_create_juego(session, nombre=nombre)
+    return j.id
 
 
 async def _persona_dm(session, telegram_id: int, nombre: str = "DM") -> int:
@@ -27,24 +33,33 @@ async def _persona_pj(session, telegram_id: int, nombre: str = "PJ") -> int:
 
 async def test_crear_sesion_minima(session):
     id_dm = await _persona_dm(session, 1)
-    s = await svc.crear_sesion(session, id_dm=id_dm, fecha=date(2030, 1, 4))
+    id_juego = await _juego(session, "JuegoMin")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego, fecha=date(2030, 1, 4)
+    )
     assert s.id is not None
     assert s.id_dm == id_dm
+    assert s.id_juego == id_juego
+    assert s.descripcion is None
     assert s.plazas_totales == 5
     assert s.plazas_sin_reserva == 1
 
 
 async def test_crear_sesion_con_overrides(session):
     id_dm = await _persona_dm(session, 2)
+    id_juego = await _juego(session, "JuegoOver")
     s = await svc.crear_sesion(
         session,
         id_dm=id_dm,
+        id_juego=id_juego,
         fecha=date(2030, 1, 11),
         plazas_totales=3,
         plazas_sin_reserva=0,
+        descripcion="Aviso: traer dados de 6",
     )
     assert s.plazas_totales == 3
     assert s.plazas_sin_reserva == 0
+    assert s.descripcion == "Aviso: traer dados de 6"
 
 
 async def test_get_sesion_inexistente_devuelve_none(session):
@@ -54,7 +69,10 @@ async def test_get_sesion_inexistente_devuelve_none(session):
 async def test_apuntar_pj_camino_feliz(session):
     id_dm = await _persona_dm(session, 10)
     id_pj = await _persona_pj(session, 11, "PJ-1")
-    s = await svc.crear_sesion(session, id_dm=id_dm, fecha=date(2030, 2, 1))
+    id_juego = await _juego(session, "Juego10")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego, fecha=date(2030, 2, 1)
+    )
 
     sp = await svc.apuntar_pj(session, sesion_id=s.id, pj_id=id_pj)
     assert sp.id is not None
@@ -66,7 +84,10 @@ async def test_apuntar_pj_camino_feliz(session):
 async def test_apuntar_pj_dos_veces_falla(session):
     id_dm = await _persona_dm(session, 20)
     id_pj = await _persona_pj(session, 21, "PJ-2")
-    s = await svc.crear_sesion(session, id_dm=id_dm, fecha=date(2030, 2, 8))
+    id_juego = await _juego(session, "Juego20")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego, fecha=date(2030, 2, 8)
+    )
 
     await svc.apuntar_pj(session, sesion_id=s.id, pj_id=id_pj)
     with pytest.raises(svc.YaApuntadoError):
@@ -81,15 +102,20 @@ async def test_apuntar_pj_a_sesion_inexistente(session):
 
 async def test_apuntar_pj_inexistente(session):
     id_dm = await _persona_dm(session, 40)
-    s = await svc.crear_sesion(session, id_dm=id_dm, fecha=date(2030, 2, 15))
+    id_juego = await _juego(session, "Juego40")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego, fecha=date(2030, 2, 15)
+    )
     with pytest.raises(ValueError, match="PJ"):
         await svc.apuntar_pj(session, sesion_id=s.id, pj_id=9999)
 
 
 async def test_sesion_llena_sin_acompanantes(session):
     id_dm = await _persona_dm(session, 50)
+    id_juego = await _juego(session, "Juego50")
     s = await svc.crear_sesion(
-        session, id_dm=id_dm, fecha=date(2030, 3, 1), plazas_totales=2
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=date(2030, 3, 1), plazas_totales=2,
     )
     pj1 = await _persona_pj(session, 51, "P1")
     pj2 = await _persona_pj(session, 52, "P2")
@@ -103,8 +129,10 @@ async def test_sesion_llena_sin_acompanantes(session):
 
 async def test_acompanantes_cuentan_para_plazas(session):
     id_dm = await _persona_dm(session, 60)
+    id_juego = await _juego(session, "Juego60")
     s = await svc.crear_sesion(
-        session, id_dm=id_dm, fecha=date(2030, 3, 8), plazas_totales=3
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=date(2030, 3, 8), plazas_totales=3,
     )
     pj1 = await _persona_pj(session, 61, "Q1")
     pj2 = await _persona_pj(session, 62, "Q2")
@@ -121,8 +149,10 @@ async def test_acompanantes_cuentan_para_plazas(session):
 
 async def test_plazas_ocupadas_calculo(session):
     id_dm = await _persona_dm(session, 70)
+    id_juego = await _juego(session, "Juego70")
     s = await svc.crear_sesion(
-        session, id_dm=id_dm, fecha=date(2030, 3, 15), plazas_totales=6
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=date(2030, 3, 15), plazas_totales=6,
     )
     pj1 = await _persona_pj(session, 71, "R1")
     pj2 = await _persona_pj(session, 72, "R2")

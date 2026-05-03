@@ -14,9 +14,12 @@ async def crear_sesion(payload: SesionIn, session: AsyncSession = Depends(get_se
     return await svc.crear_sesion(
         session,
         id_dm=payload.id_dm,
+        id_juego=payload.id_juego,
         fecha=payload.fecha,
         plazas_totales=payload.plazas_totales,
         plazas_sin_reserva=payload.plazas_sin_reserva,
+        nombre=payload.nombre,
+        descripcion=payload.descripcion,
         id_premisa=payload.id_premisa,
         id_campania=payload.id_campania,
         numero=payload.numero,
@@ -48,5 +51,14 @@ async def apuntar(
         raise HTTPException(status_code=409, detail="El PJ ya está apuntado")
     except svc.SesionLlenaError:
         raise HTTPException(status_code=409, detail="No quedan plazas")
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.get("/{sesion_id}/jugadores",  status_code=status.HTTP_200_OK)
+async def nombre_pjs_en_sesion(sesion_id: int,
+                               session: AsyncSession = Depends(get_session),
+                               ):
+    try:
+        return await svc.nombre_pjs_en_sesion(session, sesion_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

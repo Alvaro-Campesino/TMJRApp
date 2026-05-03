@@ -46,9 +46,12 @@ class PJOut(_ORM):
 
 class SesionIn(BaseModel):
     id_dm: int
+    id_juego: int                      # required: toda sesión tiene sistema
     fecha: date
     plazas_totales: int = Field(default=5, ge=1, le=6)
     plazas_sin_reserva: int = Field(default=1, ge=0)
+    nombre: str | None = Field(default=None, max_length=100)
+    descripcion: str | None = Field(default=None, max_length=400)
     id_premisa: int | None = None
     id_campania: int | None = None
     numero: int | None = None
@@ -57,9 +60,12 @@ class SesionIn(BaseModel):
 class SesionOut(_ORM):
     id: int
     id_dm: int
+    id_juego: int | None
     fecha: date
     plazas_totales: int
     plazas_sin_reserva: int
+    nombre: str | None
+    descripcion: str | None
     id_premisa: int | None
     id_campania: int | None
     numero: int | None
@@ -80,3 +86,37 @@ class SesionPJOut(_ORM):
     id_pj: int
     acompanantes: int
     apuntada_en: datetime
+
+
+class JuegoIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=100)
+    descripcion: str | None = None
+
+
+class JuegoOut(_ORM):
+    id: int
+    nombre: str
+    descripcion: str | None
+    created_at: datetime
+
+
+class DMJuegoIn(BaseModel):
+    """Añadir juego a un DM. Pasa id_juego (existente) o nombre (crea/busca)."""
+    id_juego: int | None = None
+    nombre: str | None = Field(default=None, min_length=1, max_length=100)
+
+
+class PremisaIn(BaseModel):
+    nombre: str = Field(min_length=1, max_length=100)
+    id_juego: int | None = None
+    descripcion: str | None = Field(default=None, max_length=400)
+    aviso_contenido: str | None = Field(default=None, max_length=200)
+
+
+class PremisaOut(_ORM):
+    id: int
+    nombre: str
+    id_juego: int | None
+    descripcion: str | None
+    aviso_contenido: str | None
+    created_at: datetime

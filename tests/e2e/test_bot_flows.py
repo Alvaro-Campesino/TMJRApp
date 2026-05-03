@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from tests.e2e.conftest import E2E_CHAT_ID, E2E_TOKEN
-from tmjr.db.models import DM, PJ, Persona, Sesion, SesionPJ
+from tmjr.db.models import DM, PJ, Juego, Persona, Premisa, Sesion, SesionPJ
 
 
 def _send_message_calls(telegram_mock):
@@ -83,65 +83,164 @@ async def test_start_idempotente(http_client, telegram_mock, db_session, make_te
 # ──────────────────────── Crear sesión ────────────────────────
 
 
-async def test_crear_sesion_full_flow_crea_dm_y_publica(
+async def test_crear_sesion_full_flow_crea_dm_premisa_juego_y_publica(
     http_client, telegram_mock, db_session, make_text_update, make_callback_update
 ):
     tg_id = 20001
 
-    # 1. /start → persona existe
+    # 1. /start
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="/start", first_name="DM-Test"),
     )
-
-    # 2. Pulsa "Crear sesión" en el menú
+    # 2. Pulsa "Crear sesión"
     await http_client.post(
         "/telegram/webhook",
         json=make_callback_update(telegram_id=tg_id, data="crear_sesion"),
     )
-
-    # 3. La persona aún no es DM → bot pide biografía. Responde con texto.
+    # 3. Bio (DM nuevo)
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="DM con 5 años de experiencia"),
     )
-
-    # 4. Responde fecha
+    # 4. Nombre de la premisa
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="La maldición de Strahd"),
+    )
+    # 5. Descripción
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="Aventura clásica de Ravenloft"),
+    )
+    # 6. Lista de juegos vacía → pulsa "Añadir nuevo"
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="juego_nuevo"),
+    )
+    # 7. Nombre del juego nuevo (no existe en catálogo)
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="D&D 5e"),
+    )
+    # 8. Confirma crearlo en catálogo
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="nuevo_juego_ok"),
+    )
+    # 9. Fecha
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="2030-09-07"),
     )
-
-    # 5. Responde plazas
+    # 10. Plazas
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="4"),
+    )
+    # 11. Nota específica de esta sesión
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="Nivel 5, traer copia"),
     )
 
     # ─── Comprobaciones ───
     persona = (
         await db_session.execute(select(Persona).where(Persona.telegram_id == tg_id))
     ).scalar_one()
-    assert persona.id_master is not None, "La persona debería tener perfil DM"
+    assert persona.id_master is not None
 
-    dm = await db_session.get(DM, persona.id_master)
-    assert dm.biografia == "DM con 5 años de experiencia"
+    juegos = (await db_session.execute(select(Juego))).scalars().all()
+    assert [j.nombre for j in juegos] == ["D&D 5e"]
+
+    premisas = (await db_session.execute(select(Premisa))).scalars().all()
+    assert len(premisas) == 1
+    p = premisas[0]
+    assert p.nombre == "La maldición de Strahd"
+    assert p.descripcion == "Aventura clásica de Ravenloft"
+    assert p.id_juego == juegos[0].id
 
     sesiones = (await db_session.execute(select(Sesion))).scalars().all()
     assert len(sesiones) == 1
     s = sesiones[0]
-    assert s.id_dm == dm.id
+    assert s.id_premisa == p.id
+    assert s.id_juego == juegos[0].id
+    assert s.descripcion == "Nivel 5, traer copia"
     assert s.plazas_totales == 4
     assert str(s.fecha) == "2030-09-07"
 
-    # La tarjeta se publicó en el canal: hay un sendMessage cuyo chat_id == E2E_CHAT_ID
+    # La tarjeta lleva el nombre de la premisa + la descripción de SESIÓN
+    # (la específica gana sobre la de premisa)
     publicaciones = [
         _payload(c) for c in _send_message_calls(telegram_mock)
         if str(_payload(c).get("chat_id")) == E2E_CHAT_ID
     ]
     assert len(publicaciones) == 1
-    assert "Sesión" in publicaciones[0]["text"]
-    assert "2030-09-07" in publicaciones[0]["text"]
+    text = publicaciones[0]["text"]
+    assert "La maldición de Strahd" in text
+    assert "Nivel 5, traer copia" in text   # descripción de la sesión
+    assert "Ravenloft" not in text          # NO la de premisa (override)
+    assert "2030-09-07" in text
+
+
+async def test_crear_sesion_reusa_juego_existente(
+    http_client, telegram_mock, db_session, make_text_update, make_callback_update
+):
+    """Si el juego ya existe en el catálogo, no se duplica al añadirlo."""
+    # Pre-existente en el catálogo global
+    await http_client.post("/juegos", json={"nombre": "Vampiro"})
+
+    tg_id = 20003
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="/start"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="crear_sesion"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="bio"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="One-shot vampírico"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="/skip"),
+    )
+    # No tiene juegos en su lista → pulsa "añadir nuevo"
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="juego_nuevo"),
+    )
+    # Escribe "vampiro" (ya existe, case-insensitive)
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="vampiro"),
+    )
+    # NO debe pedir confirmación: como ya existe, salta directo a fecha.
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="2030-12-01"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="3"),
+    )
+    # /skip de la nota específica de la sesión
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="/skip"),
+    )
+
+    juegos = (await db_session.execute(select(Juego))).scalars().all()
+    assert [j.nombre for j in juegos] == ["Vampiro"]  # NO duplicado
+
+    sesiones = (await db_session.execute(select(Sesion))).scalars().all()
+    assert len(sesiones) == 1
 
 
 async def test_crear_sesion_fecha_invalida_repregunta(
@@ -161,17 +260,36 @@ async def test_crear_sesion_fecha_invalida_repregunta(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="bio"),
     )
-    # Fecha mal formateada
+    # Nombre, desc, juego (los pasamos rápido)
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="Sesión X"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="/skip"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="juego_nuevo"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_text_update(telegram_id=tg_id, text="UnJuegoNuevo"),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data="nuevo_juego_ok"),
+    )
+    # Ahora la fecha mal formateada
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="ayer"),
     )
 
-    # No se creó sesión todavía
     sesiones = (await db_session.execute(select(Sesion))).scalars().all()
     assert sesiones == []
 
-    # El bot replicó con el mensaje de error
     last = _payload(_send_message_calls(telegram_mock)[-1])
     assert "no válid" in last["text"].lower() or "AAAA" in last["text"]
 
@@ -182,13 +300,19 @@ async def test_crear_sesion_fecha_invalida_repregunta(
 async def test_unirse_full_flow_crea_pj_y_apunta(
     http_client, telegram_mock, db_session, make_text_update, make_callback_update
 ):
-    # Setup: una persona DM crea una sesión
+    # Setup: una persona DM crea una sesión (flujo completo nuevo)
     dm_tg = 30001
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="/start"))
     await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data="crear_sesion"))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="bio dm"))
+    await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="Mi sesión"))
+    await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="/skip"))
+    await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data="juego_nuevo"))
+    await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="OneShot"))
+    await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data="nuevo_juego_ok"))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="2030-10-05"))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="3"))
+    await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="/skip"))
 
     sesion = (await db_session.execute(select(Sesion))).scalar_one()
 

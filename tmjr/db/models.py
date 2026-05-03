@@ -154,6 +154,11 @@ class Sesion(Base):
     id_premisa: Mapped[int | None] = mapped_column(ForeignKey("premisa.id"))
     id_campania: Mapped[int | None] = mapped_column(ForeignKey("campania.id"))
     id_dm: Mapped[int] = mapped_column(ForeignKey("dm.id"), nullable=False)
+    # En BD se añade como NULL para no romper datos existentes; el código lo
+    # exige a la hora de crear (Pydantic SesionIn.id_juego es required).
+    id_juego: Mapped[int | None] = mapped_column(ForeignKey("juegos.id"))
+    nombre: Mapped[str | None] = mapped_column(String(100))
+    descripcion: Mapped[str | None] = mapped_column(String(400))
     numero: Mapped[int | None] = mapped_column(Integer)
     fecha: Mapped[date] = mapped_column(Date, nullable=False)
     plazas_totales: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")

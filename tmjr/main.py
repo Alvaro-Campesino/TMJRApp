@@ -12,6 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request, status
 from telegram import Update
 from telegram.error import TelegramError
 
+from tmjr.api.juegos import router as juegos_router
 from tmjr.api.personas import router as personas_router
 from tmjr.api.sesiones import router as sesiones_router
 from tmjr.bot.app import build_application
@@ -49,20 +50,32 @@ async def lifespan(app: FastAPI):
     await application.start()
 
     if settings.telegram_webhook_url:
-        try:
-            cert_kwarg = {}
-            if settings.telegram_webhook_cert_file:
-                cert_path = Path(settings.telegram_webhook_cert_file)
-                if cert_path.is_file():
-                    cert_kwarg["certificate"] = cert_path
-                    logger.warning("Subiendo cert self-signed: %s", cert_path)
-                else:
-                    logger.warning(
-                        "TELEGRAM_WEBHOOK_CERT_FILE=%s no existe; "
-                        "registro el webhook sin cert (Telegram lo rechazará si es self-signed).",
-                        cert_path,
-                    )
+        cert_kwarg = {}
+        if settings.telegram_webhook_cert_file:
+            cert_path = Path(settings.telegram_webhook_cert_file)
+            if cert_path.is_file():
+                cert_kwarg["certificate"] = cert_path
+                logger.warning("Subiendo cert self-signed: %s", cert_path)
+            else:
+                # CRÍTICO: si nos piden cert pero no lo encontramos, NO tocamos
+                # el webhook. Si lo tocásemos sin cert, machacaríamos un webhook
+                # bueno (con cert subido manualmente) y romperíamos producción.
+                # Mejor dejar la config tal cual está y avisar.
+                logger.error(
+                    "TELEGRAM_WEBHOOK_CERT_FILE=%s NO existe en el contenedor. "
+                    "NO toco setWebhook para no machacar la config actual. "
+                    "Sube el cert al host y reinicia, o desactiva la variable.",
+                    cert_path,
+                )
+                app.state.ptb = application
+                try:
+                    yield
+                finally:
+                    await application.stop()
+                    await application.shutdown()
+                return
 
+        try:
             await application.bot.set_webhook(
                 url=settings.telegram_webhook_url,
                 secret_token=settings.telegram_webhook_secret,
@@ -90,6 +103,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="TMJRApp", lifespan=lifespan)
 app.include_router(personas_router)
 app.include_router(sesiones_router)
+app.include_router(juegos_router)
 
 
 @app.get("/health")

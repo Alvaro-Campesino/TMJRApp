@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from tmjr.db import async_session_maker
 from tmjr.services import personas as svc
 
-from ..keyboards import menu_principal
+from ..keyboards import menu_cajas
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -27,6 +27,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         else f"¡Hola de nuevo, {persona.nombre}!"
     )
     await update.effective_message.reply_text(
-        f"{saludo}\n\n¿Qué quieres hacer?",
-        reply_markup=menu_principal(),
+        f"{saludo}\n\nElige una caja del teclado o usa /help para ver qué puedo hacer.",
+        reply_markup=menu_cajas(),
     )
