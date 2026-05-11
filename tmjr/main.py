@@ -20,6 +20,7 @@ from tmjr.api.personas import router as personas_router
 from tmjr.api.sesiones import router as sesiones_router
 from tmjr.bot.app import build_application, post_initialize
 from tmjr.config import get_settings
+from tmjr.version import __version__ as APP_VERSION
 
 # Asegura que los logs propios (no solo los de uvicorn) salgan por stdout.
 logging.basicConfig(
@@ -57,7 +58,8 @@ async def lifespan(app: FastAPI):
     app.state.ptb = None
 
     logger.warning(
-        "Lifespan: token=%s url=%s cert_file=%s chat=%s",
+        "TMJRApp %s — Lifespan: token=%s url=%s cert_file=%s chat=%s",
+        APP_VERSION,
         "set" if settings.telegram_token else "EMPTY",
         settings.telegram_webhook_url or "EMPTY",
         settings.telegram_webhook_cert_file or "EMPTY",
@@ -143,7 +145,7 @@ app.include_router(juegos_router)
 
 @app.get("/health")
 async def health() -> dict[str, str]:
-    return {"status": "ok"}
+    return {"status": "ok", "version": APP_VERSION}
 
 
 @app.post("/telegram/webhook")

@@ -26,6 +26,7 @@ from .handlers.editar_sesion import build_handler as build_editar_sesion
 from .handlers.gestionar_campania import build_handler as build_gestionar_campania
 from .handlers.help import help_command
 from .handlers.info_campania import info_campania
+from .handlers.invitados import mas1, menos1
 from .handlers.listar_juegos import listar_juegos
 from .handlers.listar_premisas import listar_premisas
 from .handlers.listar_sesiones import listar_sesiones
@@ -136,6 +137,9 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(
         CallbackQueryHandler(desapuntarse, pattern=r"^desapuntar_\d+$")
     )
+    # +1 / -1 de invitados sin Telegram.
+    application.add_handler(CallbackQueryHandler(mas1, pattern=r"^mas1_\d+$"))
+    application.add_handler(CallbackQueryHandler(menos1, pattern=r"^menos1_\d+$"))
 
     # Callbacks de los submenús inline.
     application.add_handler(

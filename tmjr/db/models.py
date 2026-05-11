@@ -67,6 +67,7 @@ class PJ(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     nombre: Mapped[str] = mapped_column(String(100), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text)
+    id_anfitrion: Mapped[int | None] = mapped_column(ForeignKey("pj.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 

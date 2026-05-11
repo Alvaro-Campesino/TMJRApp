@@ -156,7 +156,11 @@ def picker_premisas_para_dm(
 
 
 def tarjeta_sesion(sesion_id: int) -> InlineKeyboardMarkup:
-    """Botones de la tarjeta publicada en el canal: apuntarse y borrarse."""
+    """Botones de la tarjeta publicada en el canal.
+
+    Fila 1: 🙋 Apuntarse · 🚪 Borrarme (mí mismo).
+    Fila 2: ➕1 · ➖1     (invitados sin Telegram, ligados al anfitrión).
+    """
     return InlineKeyboardMarkup(
         [
             [
@@ -165,6 +169,14 @@ def tarjeta_sesion(sesion_id: int) -> InlineKeyboardMarkup:
                 ),
                 InlineKeyboardButton(
                     "🚪 Borrarme", callback_data=f"desapuntar_{sesion_id}"
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "➕1", callback_data=f"mas1_{sesion_id}"
+                ),
+                InlineKeyboardButton(
+                    "➖1", callback_data=f"menos1_{sesion_id}"
                 ),
             ],
         ]

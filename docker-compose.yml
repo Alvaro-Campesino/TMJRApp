@@ -1,7 +1,10 @@
 services:
   app:
-    build: .
-    image: tmjrapp:latest
+    build:
+      context: .
+      args:
+        VERSION: ${TMJR_VERSION:-dev}
+    image: tmjrapp:${TMJR_VERSION:-latest}
     ports:
       - "8121:80"
     environment:
