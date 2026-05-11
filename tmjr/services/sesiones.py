@@ -22,6 +22,10 @@ class NoApuntadoError(Exception):
     """Se intenta borrar a un PJ que no estaba apuntado a la sesión."""
 
 
+class AnfitrionNoApuntadoError(Exception):
+    """El anfitrión intenta traer un invitado pero no está apuntado a la sesión."""
+
+
 async def crear_sesion(
     session: AsyncSession,
     *,
@@ -145,20 +149,11 @@ async def apuntados_telegram(
 async def borrar_sesion(session: AsyncSession, sesion: Sesion) -> None:
     """Borra la sesión y todas sus filas dependientes en una sola transacción.
 
-    Cubre `sesion_pj`, `pjs_en_espera` y `limites_sesion`. Además borra
-    los PJ "invitados" (PJ.id_anfitrion IS NOT NULL) que estaban
-    apuntados a esta sesión — su ciclo de vida está atado al SesionPJ
-    que los creó. NO toca la tarjeta del canal.
+    Cubre `sesion_pj`, `pjs_en_espera` y `limites_sesion`. Los invitados
+    son solo un contador en `sesion_pj.acompanantes`, así que desaparecen
+    al borrar la fila de sesion_pj — no hay PJ que limpiar. NO toca la
+    tarjeta del canal.
     """
-    invitado_ids = (
-        await session.execute(
-            select(PJ.id)
-            .join(SesionPJ, SesionPJ.id_pj == PJ.id)
-            .where(SesionPJ.id_sesion == sesion.id)
-            .where(PJ.id_anfitrion.is_not(None))
-        )
-    ).scalars().all()
-
     await session.execute(
         delete(SesionPJ).where(SesionPJ.id_sesion == sesion.id)
     )
@@ -168,8 +163,6 @@ async def borrar_sesion(session: AsyncSession, sesion: Sesion) -> None:
     await session.execute(
         delete(LimiteSesion).where(LimiteSesion.id_sesion == sesion.id)
     )
-    if invitado_ids:
-        await session.execute(delete(PJ).where(PJ.id.in_(invitado_ids)))
     await session.delete(sesion)
     await session.commit()
 
@@ -242,14 +235,14 @@ async def add_invitado(
     *,
     sesion_id: int,
     anfitrion_pj_id: int,
-    anfitrion_nombre_visible: str,
-) -> PJ:
-    """Crea un PJ invitado del anfitrión y lo apunta a la sesión.
+) -> SesionPJ:
+    """Suma un acompañante a la fila SesionPJ del anfitrión en la sesión.
 
-    Lanza `SesionLlenaError` si añadirlo excedería las plazas. El nombre
-    del invitado es `"Invitado-<nombre>"` (cap a 100 chars total porque
-    PJ.nombre es VARCHAR(100); el truncado a 20 chars para la tarjeta lo
-    aplica `nombre_pjs_en_sesion`).
+    Los invitados no son PJ propios: son solo un contador en
+    `sesion_pj.acompanantes` de la fila del anfitrión. Esto exige que el
+    anfitrión esté apuntado a la sesión — si no lo está, lanzamos
+    `AnfitrionNoApuntadoError`. Si añadir un acompañante excedería las
+    plazas totales, lanzamos `SesionLlenaError`.
     """
     sesion = await session.get(Sesion, sesion_id)
     if sesion is None:
@@ -257,20 +250,24 @@ async def add_invitado(
     if (await session.get(PJ, anfitrion_pj_id)) is None:
         raise ValueError(f"PJ {anfitrion_pj_id} (anfitrión) no existe")
 
+    sp = (
+        await session.execute(
+            select(SesionPJ)
+            .where(SesionPJ.id_sesion == sesion_id)
+            .where(SesionPJ.id_pj == anfitrion_pj_id)
+        )
+    ).scalar_one_or_none()
+    if sp is None:
+        raise AnfitrionNoApuntadoError
+
     ocupadas = await plazas_ocupadas(session, sesion_id)
     if ocupadas + 1 > sesion.plazas_totales:
         raise SesionLlenaError
 
-    nombre = f"Invitado-{anfitrion_nombre_visible}"[:100]
-    invitado = PJ(nombre=nombre, id_anfitrion=anfitrion_pj_id)
-    session.add(invitado)
-    await session.flush()  # asigna invitado.id
-
-    sp = SesionPJ(id_sesion=sesion_id, id_pj=invitado.id)
-    session.add(sp)
+    sp.acompanantes += 1
     await session.commit()
-    await session.refresh(invitado)
-    return invitado
+    await session.refresh(sp)
+    return sp
 
 
 async def remove_ultimo_invitado(
@@ -279,23 +276,21 @@ async def remove_ultimo_invitado(
     sesion_id: int,
     anfitrion_pj_id: int,
 ) -> bool:
-    """Borra el último invitado del anfitrión apuntado a la sesión (LIFO
-    por `apuntada_en`). Devuelve True si quitó alguno, False si no había.
+    """Decrementa en 1 los acompañantes del anfitrión en la sesión.
+
+    Devuelve True si había acompañantes (y se restó uno), False si el
+    anfitrión no estaba apuntado o tenía 0 acompañantes.
     """
-    stmt = (
-        select(SesionPJ, PJ)
-        .join(PJ, PJ.id == SesionPJ.id_pj)
-        .where(SesionPJ.id_sesion == sesion_id)
-        .where(PJ.id_anfitrion == anfitrion_pj_id)
-        .order_by(SesionPJ.apuntada_en.desc())
-        .limit(1)
-    )
-    row = (await session.execute(stmt)).first()
-    if row is None:
+    sp = (
+        await session.execute(
+            select(SesionPJ)
+            .where(SesionPJ.id_sesion == sesion_id)
+            .where(SesionPJ.id_pj == anfitrion_pj_id)
+        )
+    ).scalar_one_or_none()
+    if sp is None or sp.acompanantes <= 0:
         return False
-    sp, pj = row
-    await session.delete(sp)
-    await session.delete(pj)
+    sp.acompanantes -= 1
     await session.commit()
     return True
 
@@ -322,30 +317,29 @@ async def desapuntar_pj(
 
 
 async def nombre_pjs_en_sesion(session, id_session: int) -> list[str]:
-    """Nombres de los apuntados a una sesión, en orden de apuntada_en.
+    """Devuelve un nombre por slot ocupado de la sesión.
 
-    Para los PJ normales devuelve el nombre de la `Persona` propietaria.
-    Para los invitados (PJ.id_anfitrion IS NOT NULL) no hay Persona, así
-    que devuelve `PJ.nombre` truncado a 20 caracteres — el formato
-    `"Invitado-<nombre>"` que se almacena en `add_invitado` ya viene listo
-    para encajar en el slot de la tarjeta.
+    Por cada `SesionPJ` (ordenado por `apuntada_en`) emite primero el
+    nombre de la `Persona` del PJ, y a continuación `acompanantes`
+    entradas con el formato `"Invitado-<persona.nombre>"` truncado a 20
+    caracteres. Así cada acompañante ocupa su slot numérico en la
+    tarjeta de la sesión.
     """
-    from sqlalchemy import case
-
-    nombre_expr = case(
-        (PJ.id_anfitrion.is_not(None), func.substr(PJ.nombre, 1, 20)),
-        else_=Persona.nombre,
-    )
     stmt = (
-        select(nombre_expr)
+        select(Persona.nombre, SesionPJ.acompanantes)
         .select_from(SesionPJ)
-        .join(PJ, PJ.id == SesionPJ.id_pj)
-        .outerjoin(Persona, Persona.id_pj == PJ.id)
+        .join(Persona, Persona.id_pj == SesionPJ.id_pj)
         .where(SesionPJ.id_sesion == id_session)
         .order_by(SesionPJ.apuntada_en)
     )
-    result = await session.execute(stmt)
-    return list(result.scalars().all())
+    rows = (await session.execute(stmt)).all()
+    nombres: list[str] = []
+    for nombre, acompanantes in rows:
+        nombres.append(nombre)
+        if acompanantes:
+            invitado = f"Invitado-{nombre}"[:20]
+            nombres.extend([invitado] * acompanantes)
+    return nombres
 
 
 

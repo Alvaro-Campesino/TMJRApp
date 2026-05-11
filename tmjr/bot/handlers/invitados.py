@@ -1,15 +1,17 @@
 """Botones ➕1 / ➖1 de la tarjeta de sesión: invitados sin Telegram.
 
-Un "invitado" es un PJ con `id_anfitrion` apuntando al PJ del anfitrión
-(quien pulsó +1). Vive solo mientras esté apuntado a esa sesión: cuando
-el anfitrión pulsa -1 o se borra la sesión, el PJ invitado desaparece.
+Un "invitado" es un acompañante anónimo del anfitrión: se cuenta en
+`sesion_pj.acompanantes` de la fila del anfitrión. No hay PJ propio.
+Desaparece al pulsar -1, al desapuntarse el anfitrión o al borrar la
+sesión.
 
 Comportamiento:
   - mas1: si el usuario no tiene Persona/PJ, deep-link a /start
-    apuntar_<id> igual que el botón Apuntarse. Si lo tiene, crea el
-    invitado, lo apunta y republica la tarjeta.
-  - menos1: borra el último invitado del anfitrión (LIFO por
-    `apuntada_en`). Si no hay, toast informativo.
+    apuntar_<id> igual que el botón Apuntarse. Si lo tiene pero no está
+    apuntado a la sesión, toast pidiendo apuntarse primero. Si lo está,
+    suma 1 acompañante y republica la tarjeta.
+  - menos1: resta 1 acompañante al anfitrión. Si no tenía, toast
+    informativo.
 
 Republica la tarjeta tras cada cambio para refrescar la lista de
 jugadores.
@@ -71,12 +73,16 @@ async def mas1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         try:
-            invitado = await sesiones_svc.add_invitado(
+            await sesiones_svc.add_invitado(
                 session,
                 sesion_id=sesion_id,
                 anfitrion_pj_id=persona.id_pj,
-                anfitrion_nombre_visible=persona.nombre[:80],
             )
+        except sesiones_svc.AnfitrionNoApuntadoError:
+            await query.answer(
+                "Apúntate primero antes de traer invitados.", show_alert=True
+            )
+            return
         except sesiones_svc.SesionLlenaError:
             await query.answer("La sesión está llena.", show_alert=True)
             return
@@ -86,7 +92,7 @@ async def mas1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
         sesion = await session.get(Sesion, sesion_id)
 
-    await query.answer(f"✅ Añadido: {invitado.nombre}")
+    await query.answer(f"✅ Invitado añadido: Invitado-{persona.nombre[:11]}")
     await _republicar(context, sesion)
 
 

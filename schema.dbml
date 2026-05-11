@@ -85,15 +85,14 @@ Table PJ {
   id            integer       [pk, increment, note: 'Identificador de la Persona Jugadora']
   nombre        varchar(100)  [not null, note: 'Nombre a mostrar como Persona jugadora']
   descripcion   text
-  id_anfitrion  integer       [ref: > PJ.id, null, note: 'Si no es null, este PJ es un invitado creado por el anfitrión (botón +1 en la tarjeta de una sesión).']
   // TODO: ¿más atributos? (avatar, notas)
   created_at    timestamp     [default: `now()`]
 
   Note: '''
     Persona jugadora (identidad en su rol de jugadora).
-    - Relación 1:1 con personas (personas.id_pj) cuando NO es invitado.
-    - Si id_anfitrion no es null, es un PJ "invitado" sin Telegram que vive
-      mientras esté apuntado a la sesión de su anfitrión (+1 / -1).
+    - Relación 1:1 con personas (personas.id_pj).
+    - Los invitados sin Telegram no tienen fila propia en PJ; se cuentan
+      en sesion_pj.acompanantes de la fila del anfitrión (botón +1 / -1).
     - Aparece en sesion_pj, pjs_en_espera, campania_pjs_fijos.
     - Sistemas preferidos / conocidos en PJ_juegos_preferidos / PJ_juegos_conocidos.
   '''
