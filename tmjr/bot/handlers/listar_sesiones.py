@@ -30,7 +30,7 @@ async def listar_sesiones(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         titulo = s.nombre or f"Sesión #{s.id}"
         texto = (
             f"*{titulo}*\n"
-            f"📅 {s.fecha.isoformat()}\n"
+            f"📅 {s.fecha.strftime('%Y-%m-%d %H:%M')}\n"
             f"🪑 {s.plazas_totales} plazas"
         )
         await update.effective_message.reply_text(

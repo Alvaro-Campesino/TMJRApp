@@ -18,11 +18,31 @@ from telegram.ext import (
 from tmjr.config import get_settings
 
 from .handlers.cajas import caja_dispatcher
+from .handlers.crear_premisa import build_handler as build_crear_premisa
 from .handlers.crear_sesion import build_handler as build_crear_sesion
+from .handlers.desapuntarse import desapuntarse
+from .handlers.editar_premisa import build_handler as build_editar_premisa
+from .handlers.editar_sesion import build_handler as build_editar_sesion
+from .handlers.gestionar_campania import build_handler as build_gestionar_campania
 from .handlers.help import help_command
+from .handlers.info_campania import info_campania
 from .handlers.listar_juegos import listar_juegos
+from .handlers.listar_premisas import listar_premisas
 from .handlers.listar_sesiones import listar_sesiones
-from .handlers.mi_perfil import ver_perfil
+from .handlers.mi_perfil import build_editar_perfil_handler, ver_perfil
+from .handlers.perfil_dm import (
+    abrir_editar_dm,
+    abrir_picker_juegos,
+    abrir_picker_premisas,
+    add_juego,
+    add_premisa,
+    build_crear_dm_handler,
+    build_editar_dm_bio_handler,
+    picker_done,
+    ver_dm_juegos,
+    ver_dm_premisas,
+    ver_perfil_dm,
+)
 from .handlers.proximamente import proximamente
 from .handlers.start import start
 from .handlers.unirse import build_handler as build_unirse
@@ -39,69 +59,158 @@ BOT_COMMANDS: list[BotCommand] = [
     BotCommand("listar_sesiones", "Ver sesiones abiertas"),
     BotCommand("listar_juegos", "Ver juegos del catálogo"),
     BotCommand("mi_perfil", "Ver tu persona"),
-    BotCommand("crear_premisa", "Crear una premisa (próx.)"),
-    BotCommand("listar_premisas", "Listar premisas (próx.)"),
+    BotCommand("crear_premisa", "Crear una premisa"),
+    BotCommand("listar_premisas", "Listar premisas"),
     BotCommand("crear_campania", "Crear una campaña (próx.)"),
     BotCommand("listar_campanias", "Listar campañas (próx.)"),
     BotCommand("cancelar", "Cancelar flujo en curso"),
 ]
 
 
-async def _post_init(application: Application) -> None:
+async def post_initialize(application: Application) -> None:
+    """Inicializaciones que requieren un bot ya inicializado.
+
+    - Publica los BotCommands en el menú nativo.
+    - Cachea el username del bot para construir deep-link URLs.
+    - Importa los formatters de object_links (auto-registro on import).
+
+    Llamar explícitamente desde el entrypoint tras `application.initialize()`.
+    No se registra como `post_init` del builder porque PTB solo invoca ese
+    hook desde `run_polling()`/`run_webhook()`, y nuestros entrypoints
+    (FastAPI lifespan, devbot) hacen el ciclo de vida a mano.
+    """
+    import logging
+
     await application.bot.set_my_commands(BOT_COMMANDS)
+
+    # Importa para registrar formatters (premisa, juego, dm, sesion).
+    from . import object_formatters  # noqa: F401
+    from .object_links import set_bot_username
+
+    me = await application.bot.get_me()
+    set_bot_username(me.username)
+    logging.getLogger("tmjr").warning(
+        "Bot username cacheado: @%s (deep-links activados)", me.username
+    )
 
 
 def _register_handlers(application: Application) -> None:
-    # Comandos directos.
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(CommandHandler("listar_sesiones", listar_sesiones))
-    application.add_handler(CommandHandler("listar_juegos", listar_juegos))
-    application.add_handler(CommandHandler("mi_perfil", ver_perfil))
-    # Comandos "próximamente" — responden con stub mientras no estén listos.
-    for cmd in (
-        "crear_premisa",
-        "listar_premisas",
-        "crear_campania",
-        "listar_campanias",
-    ):
-        application.add_handler(CommandHandler(cmd, proximamente))
+    # Política: el bot solo responde a comandos en chats privados. En grupos
+    # o canales los CommandHandler quedan filtrados (no responde nada). Lo
+    # único que aparece en el canal son las tarjetas de sesión publicadas
+    # explícitamente desde `publicar_sesion`.
+    only_private = filters.ChatType.PRIVATE
+
+    # Comandos directos (solo en privado).
+    application.add_handler(CommandHandler("start", start, filters=only_private))
+    application.add_handler(CommandHandler("help", help_command, filters=only_private))
+    application.add_handler(
+        CommandHandler("listar_sesiones", listar_sesiones, filters=only_private)
+    )
+    application.add_handler(
+        CommandHandler("listar_juegos", listar_juegos, filters=only_private)
+    )
+    application.add_handler(
+        CommandHandler("listar_premisas", listar_premisas, filters=only_private)
+    )
+    application.add_handler(
+        CommandHandler("mi_perfil", ver_perfil, filters=only_private)
+    )
+    # Las campañas se gestionan vía la caja, no hay /crear_campania ni
+    # /listar_campanias directos por ahora.
 
     # ConversationHandlers (deben ir antes del MessageHandler de cajas para
     # que sus filters.TEXT capturen primero los mensajes durante un flujo).
+    # También antes del catch-all `caja_*` de proximamente, para que los
+    # callbacks `caja_*` los absorban antes que el stub de "próximamente".
     application.add_handler(build_crear_sesion())
+    application.add_handler(build_crear_premisa())
+    application.add_handler(build_editar_sesion())
+    application.add_handler(build_editar_premisa())
+    application.add_handler(build_gestionar_campania())
+    application.add_handler(build_editar_perfil_handler())
+    application.add_handler(build_crear_dm_handler())
+    application.add_handler(build_editar_dm_bio_handler())
     application.add_handler(build_unirse())
+    # Borrarse de una sesión (one-shot, sin conversación).
+    application.add_handler(
+        CallbackQueryHandler(desapuntarse, pattern=r"^desapuntar_\d+$")
+    )
 
     # Callbacks de los submenús inline.
     application.add_handler(
         CallbackQueryHandler(ver_perfil, pattern=r"^caja_persona_ver$")
     )
+    # Perfil DM: ver/editar y pickers de juegos/premisas.
+    application.add_handler(
+        CallbackQueryHandler(ver_perfil_dm, pattern=r"^caja_persona_ver_dm$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            ver_dm_premisas, pattern=r"^caja_persona_ver_dm_premisas$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            ver_dm_juegos, pattern=r"^caja_persona_ver_dm_juegos$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(abrir_editar_dm, pattern=r"^caja_persona_editar_dm$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            abrir_picker_juegos, pattern=r"^caja_persona_editar_dm_juego$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            abrir_picker_premisas, pattern=r"^caja_persona_editar_dm_premisa$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(add_juego, pattern=r"^dm_add_juego_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(add_premisa, pattern=r"^dm_add_premisa_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(picker_done, pattern=r"^dm_picker_done$")
+    )
+
     application.add_handler(
         CallbackQueryHandler(listar_sesiones, pattern=r"^caja_sesion_listar$")
     )
     application.add_handler(
         CallbackQueryHandler(listar_juegos, pattern=r"^caja_juegos_listar$")
     )
-    # Catch-all para los caja_*_* aún no implementados (Persona/Editar,
-    # Premisa/*, Campania/*, Juegos/{Crear,Editar}, Sesion/Editar).
-    # Ojo: caja_sesion_crear lo absorbe primero el ConversationHandler de
-    # crear_sesion porque está registrado antes.
+    application.add_handler(
+        CallbackQueryHandler(listar_premisas, pattern=r"^caja_premisa_listar$")
+    )
+    # Caja Campaña → Info (one-shot). Crear y Listar los absorben los
+    # ConversationHandlers ya registrados arriba.
+    application.add_handler(
+        CallbackQueryHandler(info_campania, pattern=r"^caja_campania_info$")
+    )
+    # Catch-all para los caja_*_* aún no implementados (Premisa/Listar/Editar,
+    # Campania/*, Juegos/{Crear,Editar}, Sesion/Editar).
+    # Ojo: los caja_persona_* y caja_sesion_crear ya los absorben los handlers
+    # registrados arriba.
     application.add_handler(CallbackQueryHandler(proximamente, pattern=r"^caja_"))
 
     # Cajas del ReplyKeyboard: el usuario pulsa "👤 Persona", llega como texto.
+    # Solo en privado para que un texto suelto en grupo no dispare nada.
     cajas_regex = r"^(" + "|".join(CAJAS) + r")$"
     application.add_handler(
-        MessageHandler(filters.Regex(cajas_regex), caja_dispatcher)
+        MessageHandler(
+            filters.Regex(cajas_regex) & only_private, caja_dispatcher
+        )
     )
 
 
 def build_application(*, polling: bool = False) -> Application:
     settings = get_settings()
-    builder = (
-        Application.builder()
-        .token(settings.telegram_token)
-        .post_init(_post_init)
-    )
+    builder = Application.builder().token(settings.telegram_token)
     if not polling:
         builder = builder.updater(None)  # webhook: no polling
     application = builder.build()

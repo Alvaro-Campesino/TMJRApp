@@ -1,7 +1,36 @@
-.venv
-.env
-__pycache__
+# Python
+.venv/
+__pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
+
+# Env y secretos
+.env
+.env.*
+!.env.example
+
+# Documentos privados / scratch (no commitear)
+CONTEXT.md
+analisis.MD
+Briefing*.pdf
+imagen_ejemplo.*
+Telegram Web_files/
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
 *.log
+
+# Misc
 comandos cmd.txt
+docker-compose-env.yaml
+tmjr-deploy.tar.gz
+
+# TLS certs (no commitear claves privadas)
+certs/*.pem
+certs/*.key

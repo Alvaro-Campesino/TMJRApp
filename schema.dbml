@@ -37,10 +37,13 @@
 
 
 Table juegos {
-  id            integer       [pk, increment]
-  nombre        varchar(100)  [not null, unique, note: 'Sistema de rol: D&D 5e, Vampire, Blades in the Dark, etc.']
-  descripcion   text
-  created_at    timestamp     [default: `now()`]
+  id                       integer       [pk, increment]
+  nombre                   varchar(100)  [not null, unique, note: 'Sistema de rol: D&D 5e, Vampire, Blades in the Dark, etc.']
+  descripcion              text
+  editorial                varchar(100)
+  disponible_en_biblioteca boolean       [not null, default: false, note: 'Préstamo en la biblioteca']
+  iban                     varchar(34)   [note: 'IBAN para pago colectivo del manual']
+  created_at               timestamp     [default: `now()`]
 
   Note: 'Catálogo de sistemas de rol.'
 }
@@ -207,14 +210,19 @@ Table campania_pjs_fijos {
 
 Table sesion {
   id                  integer   [pk, increment]
+  nombre              varchar   [note: 'nombre de la sesión']
   id_premisa          integer   [ref: > premisa.id, null, note: 'Puede ser null (sesión suelta)']
   id_campania         integer   [ref: > campania.id, null, note: 'Si pertenece a una campania']
   id_dm               integer   [ref: > DM.id, not null, note: 'Máster que dirige esta sesión']
+  descripcion         varchar   [note: 'Descripción de la sesión']
+  id_juego            integer   [ref: > juegos.id, not null, note: 'Se crea si no existe']
   numero              integer   [note: 'Orden dentro de la premisa/campania, si aplica']
-  fecha               date      [not null, note: 'Sábado no festivo']
+  fecha               timestamp [not null, note: 'Día y hora de inicio (sábado no festivo)']
   plazas_totales      integer   [not null, default: 5, note: '1..6']
   plazas_sin_reserva  integer   [not null, default: 1, note: '0..plazas_totales/2; bloqueadas a la inscripción normal, para permitir que personas que aparecen espontáneamente en la sala se unan']
+  telegram_mesage_id  integer   [note: 'El ide del mensaje, neceario para poder editarlos' ]
   created_at          timestamp [default: `now()`]
+  lugar               varchar   [note: 'Lugar donde se celebra (texto libre, ≤100)']
 
   indexes {
     (id_premisa, numero) [unique, note: 'Aplica cuando id_premisa no es null']

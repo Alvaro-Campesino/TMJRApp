@@ -24,6 +24,17 @@ async def list_juegos_for_dm(session: AsyncSession, id_dm: int) -> list[Juego]:
     return list(result.scalars().all())
 
 
+async def list_juegos_not_in_dm(
+    session: AsyncSession, id_dm: int
+) -> list[Juego]:
+    """Catálogo global menos los juegos que el DM ya tiene en su lista."""
+    sub = select(DMJuego.id_juego).where(DMJuego.id_dm == id_dm)
+    result = await session.execute(
+        select(Juego).where(~Juego.id.in_(sub)).order_by(Juego.nombre)
+    )
+    return list(result.scalars().all())
+
+
 async def find_juego_by_name(session: AsyncSession, nombre: str) -> Juego | None:
     """Búsqueda case-insensitive en el catálogo global."""
     result = await session.execute(

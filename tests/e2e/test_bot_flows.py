@@ -1,7 +1,7 @@
 """End-to-end de los flujos del bot:
 
 - /start crea persona en BD y manda saludo.
-- Crear sesión: persona sin DM → bot pide bio → fecha → plazas → crea sesión y publica tarjeta.
+- Crear sesión: persona sin DM → bot pide bio → fecha (calendario) → plazas → crea sesión y publica tarjeta.
 - Unirse a sesión: persona sin PJ pulsa botón → bot pide nombre/desc del PJ → apunta.
 
 La API HTTP de Telegram está mockeada con respx; la BD es Postgres ephemero.
@@ -9,12 +9,26 @@ La API HTTP de Telegram está mockeada con respx; la BD es Postgres ephemero.
 from __future__ import annotations
 
 import json
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import select
 
 from tests.e2e.conftest import E2E_CHAT_ID, E2E_TOKEN
 from tmjr.db.models import DM, PJ, Juego, Persona, Premisa, Sesion, SesionPJ
+
+
+def _target_fecha(days_offset: int = 60) -> date:
+    """Una fecha futura suficientemente lejos para no estar en el mes actual."""
+    return date.today() + timedelta(days=days_offset)
+
+
+def _cal_pick(d: date) -> str:
+    return f"cal_pick_{d.year:04d}-{d.month:02d}-{d.day:02d}"
+
+
+def _cal_nav(d: date) -> str:
+    return f"cal_nav_{d.year:04d}-{d.month:02d}"
 
 
 def _send_message_calls(telegram_mock):
@@ -128,10 +142,15 @@ async def test_crear_sesion_full_flow_crea_dm_premisa_juego_y_publica(
         "/telegram/webhook",
         json=make_callback_update(telegram_id=tg_id, data="nuevo_juego_ok"),
     )
-    # 9. Fecha
+    # 9. Fecha — navega al mes objetivo y selecciona el día
+    target = _target_fecha()
     await http_client.post(
         "/telegram/webhook",
-        json=make_text_update(telegram_id=tg_id, text="2030-09-07"),
+        json=make_callback_update(telegram_id=tg_id, data=_cal_nav(target)),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data=_cal_pick(target)),
     )
     # 10. Plazas
     await http_client.post(
@@ -167,7 +186,7 @@ async def test_crear_sesion_full_flow_crea_dm_premisa_juego_y_publica(
     assert s.id_juego == juegos[0].id
     assert s.descripcion == "Nivel 5, traer copia"
     assert s.plazas_totales == 4
-    assert str(s.fecha) == "2030-09-07"
+    assert s.fecha == target
 
     # La tarjeta lleva el nombre de la premisa + la descripción de SESIÓN
     # (la específica gana sobre la de premisa)
@@ -180,7 +199,7 @@ async def test_crear_sesion_full_flow_crea_dm_premisa_juego_y_publica(
     assert "La maldición de Strahd" in text
     assert "Nivel 5, traer copia" in text   # descripción de la sesión
     assert "Ravenloft" not in text          # NO la de premisa (override)
-    assert "2030-09-07" in text
+    assert target.isoformat() in text
 
 
 async def test_crear_sesion_reusa_juego_existente(
@@ -221,10 +240,15 @@ async def test_crear_sesion_reusa_juego_existente(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="vampiro"),
     )
-    # NO debe pedir confirmación: como ya existe, salta directo a fecha.
+    # NO debe pedir confirmación: como ya existe, salta directo al calendario.
+    target = _target_fecha()
     await http_client.post(
         "/telegram/webhook",
-        json=make_text_update(telegram_id=tg_id, text="2030-12-01"),
+        json=make_callback_update(telegram_id=tg_id, data=_cal_nav(target)),
+    )
+    await http_client.post(
+        "/telegram/webhook",
+        json=make_callback_update(telegram_id=tg_id, data=_cal_pick(target)),
     )
     await http_client.post(
         "/telegram/webhook",
@@ -243,9 +267,11 @@ async def test_crear_sesion_reusa_juego_existente(
     assert len(sesiones) == 1
 
 
-async def test_crear_sesion_fecha_invalida_repregunta(
+async def test_crear_sesion_calendario_rechaza_fecha_pasada(
     http_client, telegram_mock, db_session, make_text_update, make_callback_update
 ):
+    """El calendario no muestra días en el pasado, pero si llega un callback
+    `cal_pick_<fecha-pasada>` (cliente alterado), el handler debe rechazarlo."""
     tg_id = 20002
     await http_client.post(
         "/telegram/webhook",
@@ -255,12 +281,10 @@ async def test_crear_sesion_fecha_invalida_repregunta(
         "/telegram/webhook",
         json=make_callback_update(telegram_id=tg_id, data="crear_sesion"),
     )
-    # Bio
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="bio"),
     )
-    # Nombre, desc, juego (los pasamos rápido)
     await http_client.post(
         "/telegram/webhook",
         json=make_text_update(telegram_id=tg_id, text="Sesión X"),
@@ -281,17 +305,16 @@ async def test_crear_sesion_fecha_invalida_repregunta(
         "/telegram/webhook",
         json=make_callback_update(telegram_id=tg_id, data="nuevo_juego_ok"),
     )
-    # Ahora la fecha mal formateada
+    # Inyecta callback de fecha pasada (algo que el calendario nunca expone).
+    fecha_pasada = date.today() - timedelta(days=10)
     await http_client.post(
         "/telegram/webhook",
-        json=make_text_update(telegram_id=tg_id, text="ayer"),
+        json=make_callback_update(telegram_id=tg_id, data=_cal_pick(fecha_pasada)),
     )
 
+    # No se debe haber creado ninguna sesión: el flujo sigue en estado FECHA.
     sesiones = (await db_session.execute(select(Sesion))).scalars().all()
     assert sesiones == []
-
-    last = _payload(_send_message_calls(telegram_mock)[-1])
-    assert "no válid" in last["text"].lower() or "AAAA" in last["text"]
 
 
 # ──────────────────────── Unirse a sesión ────────────────────────
@@ -310,7 +333,9 @@ async def test_unirse_full_flow_crea_pj_y_apunta(
     await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data="juego_nuevo"))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="OneShot"))
     await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data="nuevo_juego_ok"))
-    await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="2030-10-05"))
+    target = _target_fecha()
+    await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data=_cal_nav(target)))
+    await http_client.post("/telegram/webhook", json=make_callback_update(telegram_id=dm_tg, data=_cal_pick(target)))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="3"))
     await http_client.post("/telegram/webhook", json=make_text_update(telegram_id=dm_tg, text="/skip"))
 

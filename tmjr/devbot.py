@@ -21,7 +21,7 @@ import asyncio
 import logging
 import signal
 
-from tmjr.bot.app import build_application
+from tmjr.bot.app import build_application, post_initialize
 from tmjr.config import get_settings
 
 logging.basicConfig(
@@ -38,6 +38,7 @@ async def main() -> None:
 
     application = build_application(polling=True)
     await application.initialize()
+    await post_initialize(application)
 
     # Polling exige no tener webhook activo.
     me = await application.bot.get_me()

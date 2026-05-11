@@ -1,4 +1,0 @@
-cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\venv-supaFastApi\Scripts
-activate
-cd C:\Users\Cristina\Documents\TMJR bot\supafast-api\venv-supaFastApi\app
-uvicorn main:app --reload

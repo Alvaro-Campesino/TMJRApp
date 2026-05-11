@@ -4,10 +4,13 @@ Arranca con: `uvicorn tmjr.main:app --host 0.0.0.0 --port 80`
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+from alembic import command as alembic_command
+from alembic.config import Config as AlembicConfig
 from fastapi import FastAPI, Header, HTTPException, Request, status
 from telegram import Update
 from telegram.error import TelegramError
@@ -15,7 +18,7 @@ from telegram.error import TelegramError
 from tmjr.api.juegos import router as juegos_router
 from tmjr.api.personas import router as personas_router
 from tmjr.api.sesiones import router as sesiones_router
-from tmjr.bot.app import build_application
+from tmjr.bot.app import build_application, post_initialize
 from tmjr.config import get_settings
 
 # Asegura que los logs propios (no solo los de uvicorn) salgan por stdout.
@@ -24,6 +27,28 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("tmjr")
+
+
+_ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+
+
+def _run_alembic_upgrade() -> None:
+    """Aplica `alembic upgrade head` usando alembic.ini del repo.
+
+    Síncrono: pensado para invocarse desde el lifespan vía `asyncio.to_thread`.
+    Si no encuentra el fichero de config (p.ej. arranque desde un CWD raro
+    sin el repo entero), loguea y no aborta — el operador puede aplicar
+    las migraciones a mano.
+    """
+    if not _ALEMBIC_INI.is_file():
+        logger.error(
+            "alembic.ini no encontrado en %s — saltando migraciones automáticas. "
+            "Aplica `alembic upgrade head` a mano.",
+            _ALEMBIC_INI,
+        )
+        return
+    cfg = AlembicConfig(str(_ALEMBIC_INI))
+    alembic_command.upgrade(cfg, "head")
 
 
 @asynccontextmanager
@@ -39,6 +64,15 @@ async def lifespan(app: FastAPI):
         settings.telegram_chat_id or "EMPTY",
     )
 
+    logger.warning("Aplicando migraciones de Alembic (upgrade head)...")
+    try:
+        await asyncio.to_thread(_run_alembic_upgrade)
+        logger.warning("Migraciones aplicadas.")
+    except Exception as exc:
+        # No tiramos la app: si las migraciones fallan, el operador querrá
+        # ver el log y resolverlo (p.ej. permisos de DB, conflicto de heads).
+        logger.error("Fallo aplicando migraciones: %s", exc)
+
     if not settings.telegram_token:
         # Modo API-only: útil para correr tests sin necesidad de Telegram.
         logger.warning("TELEGRAM_TOKEN vacío → modo API-only, bot no arranca.")
@@ -47,6 +81,7 @@ async def lifespan(app: FastAPI):
 
     application = build_application()
     await application.initialize()
+    await post_initialize(application)
     await application.start()
 
     if settings.telegram_webhook_url:

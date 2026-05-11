@@ -31,6 +31,11 @@ class Juego(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     nombre: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
     descripcion: Mapped[str | None] = mapped_column(Text)
+    editorial: Mapped[str | None] = mapped_column(String(100))
+    disponible_en_biblioteca: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false"
+    )
+    iban: Mapped[str | None] = mapped_column(String(34))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -159,8 +164,9 @@ class Sesion(Base):
     id_juego: Mapped[int | None] = mapped_column(ForeignKey("juegos.id"))
     nombre: Mapped[str | None] = mapped_column(String(100))
     descripcion: Mapped[str | None] = mapped_column(String(400))
+    lugar: Mapped[str | None] = mapped_column(String(100))
     numero: Mapped[int | None] = mapped_column(Integer)
-    fecha: Mapped[date] = mapped_column(Date, nullable=False)
+    fecha: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     plazas_totales: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
     plazas_sin_reserva: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64))

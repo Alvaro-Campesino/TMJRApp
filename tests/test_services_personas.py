@@ -88,3 +88,27 @@ async def test_persona_puede_ser_dm_y_pj_a_la_vez(session):
     persona_db = await svc.get_persona(session, persona.id)
     assert persona_db.id_master == dm.id
     assert persona_db.id_pj == pj.id
+
+
+async def test_update_nombre_actualiza_y_strippea(session):
+    persona, _ = await svc.get_or_create_persona(session, telegram_id=10, nombre="Viejo")
+    out = await svc.update_nombre(session, persona, nombre="  Nuevo  ")
+    assert out.nombre == "Nuevo"
+
+    refetched = await svc.get_persona(session, persona.id)
+    assert refetched.nombre == "Nuevo"
+
+
+async def test_update_dm_biografia_set_y_clear(session):
+    persona, _ = await svc.get_or_create_persona(session, telegram_id=11, nombre="DM")
+    dm = await svc.ensure_dm(session, persona, biografia="vieja")
+
+    out = await svc.update_dm_biografia(session, dm, biografia="nueva")
+    assert out.biografia == "nueva"
+
+    out = await svc.update_dm_biografia(session, dm, biografia=None)
+    assert out.biografia is None
+
+
+async def test_get_dm_devuelve_none_si_no_existe(session):
+    assert await svc.get_dm(session, 9999) is None

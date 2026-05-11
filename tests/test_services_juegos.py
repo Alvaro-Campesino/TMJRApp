@@ -85,3 +85,24 @@ async def test_add_juego_inexistente_a_dm(session):
     id_dm = await _dm(session, 3)
     with pytest.raises(ValueError, match="Juego"):
         await svc.add_juego_to_dm(session, id_dm=id_dm, id_juego=9999)
+
+
+async def test_list_juegos_not_in_dm_excluye_los_enlazados(session):
+    id_dm = await _dm(session, 4)
+    a = await svc.create_juego(session, nombre="Aria")
+    b = await svc.create_juego(session, nombre="Brindis")
+    c = await svc.create_juego(session, nombre="Cántico")
+    # El DM ya tiene "Brindis" en su lista.
+    await svc.add_juego_to_dm(session, id_dm=id_dm, id_juego=b.id)
+
+    disponibles = await svc.list_juegos_not_in_dm(session, id_dm)
+    nombres = [j.nombre for j in disponibles]
+    assert nombres == ["Aria", "Cántico"]   # ordenado alfabéticamente y sin "Brindis"
+
+
+async def test_list_juegos_not_in_dm_dm_sin_juegos_devuelve_todo(session):
+    id_dm = await _dm(session, 5)
+    await svc.create_juego(session, nombre="Solo")
+
+    disponibles = await svc.list_juegos_not_in_dm(session, id_dm)
+    assert [j.nombre for j in disponibles] == ["Solo"]

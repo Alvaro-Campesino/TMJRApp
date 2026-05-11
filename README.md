@@ -22,6 +22,7 @@ Bot de Telegram + API para gestionar partidas de rol. Las personas usuarias inte
 9. [Cómo generar un token de Telegram (BotFather)](#cómo-generar-un-token-de-telegram-botfather)
 10. [Estructura del repo](#estructura-del-repo)
 11. [Endpoints disponibles](#endpoints-disponibles)
+12. [Funcionalidades del bot](#funcionalidades-del-bot)
 
 ---
 
@@ -612,7 +613,7 @@ TMJRApp/
 │   ├── api/                    # Routers FastAPI y schemas Pydantic
 │   ├── bot/                    # Application PTB, handlers, keyboards, publicador
 │   ├── db/                     # SQLAlchemy: engine LAZY, Base, modelos ORM
-│   └── services/               # Lógica de dominio (personas, sesiones)
+│   └── services/               # Lógica de dominio (personas, sesiones, juegos, premisas)
 ├── migrations/                 # Alembic
 ├── nginx/default.conf          # Config del reverse proxy (TLS termination)
 ├── certs/                      # nginx.pem + nginx.key (gitignored)
@@ -650,3 +651,97 @@ TMJRApp/
 | `POST` | `/telegram/webhook` | Webhook PTB (valida `X-Telegram-Bot-Api-Secret-Token`). |
 
 Documentación interactiva en `http://localhost:8000/docs` (Swagger UI generado por FastAPI).
+
+---
+
+## Funcionalidades del bot
+
+El bot **solo responde en chats privados** con el usuario. En grupos y canales se ignora cualquier `/comando`. Lo único que el bot publica en el canal de sesiones (`TELEGRAM_CHAT_ID`) son las tarjetas de las sesiones creadas.
+
+### Comandos directos
+
+| Comando | Descripción |
+|---|---|
+| `/start` | Registra a la persona (idempotente) y muestra el menú de cajas. Acepta deep-link payloads `obj_<kind>_<id>` para mostrar la ficha de un objeto, y `apuntar_<id>` para registrar a alguien que pulsó "Apuntarse" desde el canal sin tener Persona. |
+| `/help` | Cómo funciona el bot. |
+| `/crear_sesion` | Inicia el flujo de creación de sesión. |
+| `/listar_sesiones` | Sesiones abiertas (hoy o futuras) con tarjeta y botón Apuntarse. |
+| `/listar_juegos` | Catálogo global de juegos (cada nombre es un deep-link a su ficha). |
+| `/crear_premisa` | Inicia el flujo de creación de premisa. |
+| `/listar_premisas` | Catálogo global de premisas (links a la ficha y al juego). |
+| `/mi_perfil` | Ficha resumen del usuario. |
+| `/cancelar` | Aborta cualquier flujo en curso. |
+
+### Cajas del menú principal
+
+| Caja | Acciones disponibles |
+|---|---|
+| 👤 Persona | Ver mi perfil · Editar perfil (cambiar nombre) · Crear/Ver/Editar perfil DM (biografía, añadir juegos, añadir premisas) |
+| 🎲 Sesión | Crear · Listar · Editar (solo el DM dueño, sesiones futuras) |
+| 📜 Premisa | Crear · Listar · Editar (solo el DM dueño) |
+| 🏰 Campaña | Crear · Listar (gestionar PJs fijos, añadir sesión) · Info |
+| 🎮 Juegos | Listar |
+
+### Flujo "Crear sesión"
+
+```
+DM_BIO (si no eres DM aún)
+  → ELEGIR_PREMISA (Mis premisas / Almacenadas / Crear nueva)
+    → si reusas: hereda el juego (CONFIRMAR_JUEGO con opción Cambiar)
+    → si nueva: PREMISA_NOMBRE → DESC → JUEGO (catálogo del DM o añadir)
+  → SESION_NOMBRE_PICK (heredar nombre de premisa o poner otro)
+  → FECHA (calendario inline) → HORA (12-23) → MINUTOS (00/15/30/45)
+  → PLAZAS (1-6)
+  → LUGAR (Biblioteca · Online · texto libre)
+  → SESION_DESC (/skip o nota)
+  → publica tarjeta + notifica al DM si quien crea no es el propio DM
+```
+
+### Tarjeta publicada en el canal
+
+```
+Sesión: <título>
+🎲 DM: <link al DM>
+🎮 Juego: <link al juego>
+Premisa: <link a la premisa> (si difiere del título)
+Descripción: <override de la sesión>
+<descripción de la premisa>
+
+📅 2026-05-15 18:00
+📍 <lugar>
+🪑 <plazas>
+Jugadores apuntados:
+1. <PJ>
+…
+
+[🙋 Apuntarse] [🚪 Borrarme]
+```
+
+Los nombres de DM, Juego y Premisa son **deep-links** a `t.me/<bot>?start=obj_<kind>_<id>`. Al pulsar, Telegram abre el chat privado con el bot y le manda `/start` con el payload, y el bot devuelve la ficha del objeto.
+
+### Notificaciones
+
+Cuando alguien se apunta, el DM recibe un mensaje privado con el nombre del PJ y un deep-link a la sesión. Si el DM nunca habló con el bot (chat not found), se loguea como warning y la inscripción sigue adelante.
+
+### Limpieza automática del canal
+
+Al publicar una sesión nueva, el bot borra del canal cualquier tarjeta cuya `fecha` ya esté en el pasado por más de 24 horas. Best-effort: si Telegram falla al borrar (mensaje ya no existe, etc.), se loguea y se limpian los identificadores en BD igualmente para no reintentar.
+
+Listar sesiones (`/listar_sesiones`) ya filtra solo las futuras (>= hoy 00:00).
+
+### Edición por el DM
+
+Las cajas Sesión y Premisa tienen ahora "Editar". Solo el DM dueño puede editar:
+
+- **Sesión** (solo futuras): nombre, descripción, lugar, fecha y hora, plazas. Las plazas no pueden bajar por debajo de los apuntados. Tras guardar, si la tarjeta está publicada en el canal se actualiza automáticamente. Además, opción 🗑 **Borrar sesión** con confirmación: borra la sesión y su tarjeta del canal y notifica por DM a todos los apuntados.
+- **Premisa**: nombre, descripción, aviso de contenido, juego asociado (con opción de añadir uno nuevo al catálogo).
+
+### Campañas
+
+Una **campaña** agrupa varias sesiones bajo una misma premisa con un grupo fijo de PJs.
+
+- **Crear**: 🏰 Campaña → Crear. Eliges (o creas) la premisa y a continuación configuras la **primera sesión** (mismo flujo de crear sesión). La sesión se publica como tarjeta en el canal con la línea `🏰 Campaña: <link>`.
+- **PJs fijos**: quienes pulsan 🙋 Apuntarse en la **primera sesión** quedan automáticamente como fijos. Para añadir o eliminar manualmente: 🏰 Campaña → Listar → elige campaña → 👥 Gestionar PJs.
+- **Nuevas sesiones**: 🏰 Campaña → Listar → elige campaña → ➕ Añadir sesión → usa `/crear_sesion`. La sesión queda asociada a la campaña con número autoincrementado. Los PJs fijos quedan **pre-apuntados** y reciben un DM con deep-link a la sesión. Si alguno no puede acudir, pulsa 🚪 Borrarme en la tarjeta — solo se borra de esa sesión, sigue siendo fijo.
+- **Eliminar PJ**: lo quita de los fijos y de las sesiones **futuras** (las pasadas se conservan como histórico).
+- **Info**: 🏰 Campaña → Info muestra una explicación rápida del funcionamiento.

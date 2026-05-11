@@ -57,6 +57,45 @@ async def ensure_dm(
     return dm
 
 
+async def update_nombre(
+    session: AsyncSession,
+    persona: Persona,
+    *,
+    nombre: str,
+) -> Persona:
+    """Actualiza el nombre visible de la persona y refresca la entidad."""
+    persona.nombre = nombre.strip()
+    await session.commit()
+    await session.refresh(persona)
+    return persona
+
+
+async def update_dm_biografia(
+    session: AsyncSession,
+    dm: DM,
+    *,
+    biografia: str | None,
+) -> DM:
+    """Actualiza la biografía del DM (puede ser None para vaciarla)."""
+    dm.biografia = biografia
+    await session.commit()
+    await session.refresh(dm)
+    return dm
+
+
+async def get_dm(session: AsyncSession, dm_id: int) -> DM | None:
+    """Devuelve el DM por id, o None si no existe."""
+    return await session.get(DM, dm_id)
+
+
+async def get_persona_by_dm(session: AsyncSession, dm_id: int) -> Persona | None:
+    """Devuelve la Persona enlazada a este DM (1:1 vía persona.id_master)."""
+    result = await session.execute(
+        select(Persona).where(Persona.id_master == dm_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def ensure_pj(
     session: AsyncSession,
     persona: Persona,

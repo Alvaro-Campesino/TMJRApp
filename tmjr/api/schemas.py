@@ -47,7 +47,7 @@ class PJOut(_ORM):
 class SesionIn(BaseModel):
     id_dm: int
     id_juego: int                      # required: toda sesión tiene sistema
-    fecha: date
+    fecha: datetime
     plazas_totales: int = Field(default=5, ge=1, le=6)
     plazas_sin_reserva: int = Field(default=1, ge=0)
     nombre: str | None = Field(default=None, max_length=100)
@@ -61,7 +61,7 @@ class SesionOut(_ORM):
     id: int
     id_dm: int
     id_juego: int | None
-    fecha: date
+    fecha: datetime
     plazas_totales: int
     plazas_sin_reserva: int
     nombre: str | None
