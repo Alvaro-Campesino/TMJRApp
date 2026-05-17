@@ -33,6 +33,7 @@ async def crear_sesion(
     id_juego: int,
     fecha: datetime,
     plazas_totales: int = 5,
+    plazas_minimas: int = 0,
     plazas_sin_reserva: int = 1,
     nombre: str | None = None,
     descripcion: str | None = None,
@@ -42,11 +43,17 @@ async def crear_sesion(
     numero: int | None = None,
 ) -> Sesion:
     """Crea y persiste una sesión. Devuelve la entidad refrescada."""
+    if plazas_minimas < 0 or plazas_minimas > plazas_totales:
+        raise ValueError(
+            f"plazas_minimas debe estar en [0, {plazas_totales}], "
+            f"recibido {plazas_minimas}"
+        )
     sesion = Sesion(
         id_dm=id_dm,
         id_juego=id_juego,
         fecha=fecha,
         plazas_totales=plazas_totales,
+        plazas_minimas=plazas_minimas,
         plazas_sin_reserva=plazas_sin_reserva,
         nombre=nombre,
         descripcion=descripcion,
@@ -59,6 +66,29 @@ async def crear_sesion(
     await session.commit()
     await session.refresh(sesion)
     return sesion
+
+
+def cruce_minimo(
+    ocupadas_antes: int, ocupadas_despues: int, plazas_minimas: int
+) -> str | None:
+    """Detecta si se ha cruzado el umbral mínimo entre dos estados.
+
+    - "arriba": antes < min y después >= min.
+    - "abajo":  antes >= min y después < min.
+    - None:     no hay cruce, o `plazas_minimas == 0` (siempre alcanzado).
+
+    Pensado para que los handlers que apuntan/desapuntan llamen a
+    `plazas_ocupadas` antes y después de su operación, comparen con el
+    `plazas_minimas` de la sesión y, si esta función devuelve algo
+    distinto de None, notifiquen al DM.
+    """
+    if plazas_minimas <= 0:
+        return None
+    if ocupadas_antes < plazas_minimas <= ocupadas_despues:
+        return "arriba"
+    if ocupadas_despues < plazas_minimas <= ocupadas_antes:
+        return "abajo"
+    return None
 
 
 async def get_sesion(session: AsyncSession, sesion_id: int) -> Sesion | None:
@@ -86,12 +116,25 @@ async def update_sesion(
     lugar: str | None = None,
     fecha: datetime | None = None,
     plazas_totales: int | None = None,
+    plazas_minimas: int | None = None,
 ) -> Sesion:
     """Actualiza campos de una sesión. Solo modifica los kwargs no-None.
 
     Si se cambian las plazas, valida que no queden por debajo de las ya
-    ocupadas (suma de 1 + acompanantes por SesionPJ).
+    ocupadas (suma de 1 + acompanantes por SesionPJ). Si se cambia el
+    mínimo, valida que esté en `[0, plazas_totales]` (con el nuevo total
+    si se está cambiando a la vez).
     """
+    nuevo_total = (
+        plazas_totales if plazas_totales is not None else sesion.plazas_totales
+    )
+    nuevo_min = (
+        plazas_minimas if plazas_minimas is not None else sesion.plazas_minimas
+    )
+    if nuevo_min < 0 or nuevo_min > nuevo_total:
+        raise ValueError(
+            f"plazas_minimas debe estar en [0, {nuevo_total}], recibido {nuevo_min}"
+        )
     if plazas_totales is not None:
         ocupadas = await plazas_ocupadas(session, sesion.id)
         if plazas_totales < ocupadas:
@@ -99,6 +142,8 @@ async def update_sesion(
                 f"No puedo bajar a {plazas_totales} plazas: ya hay {ocupadas} ocupadas"
             )
         sesion.plazas_totales = plazas_totales
+    if plazas_minimas is not None:
+        sesion.plazas_minimas = plazas_minimas
     if nombre is not None:
         sesion.nombre = nombre
     if descripcion is not None:
@@ -131,15 +176,15 @@ async def list_sesiones_pasadas_publicadas(
 async def apuntados_telegram(
     session: AsyncSession, sesion_id: int
 ) -> list[tuple[int, str]]:
-    """Devuelve (telegram_id, pj.nombre) por cada PJ apuntado a la sesión.
+    """Devuelve (telegram_id, persona.nombre) por cada PJ apuntado a la sesión.
 
+    El nombre del PJ es siempre el de la persona (no hay PJ.nombre).
     Útil para notificar por DM al cancelar/borrar una sesión.
     """
     stmt = (
-        select(Persona.telegram_id, PJ.nombre)
+        select(Persona.telegram_id, Persona.nombre)
         .select_from(SesionPJ)
-        .join(PJ, PJ.id == SesionPJ.id_pj)
-        .join(Persona, Persona.id_pj == PJ.id)
+        .join(Persona, Persona.id_pj == SesionPJ.id_pj)
         .where(SesionPJ.id_sesion == sesion_id)
     )
     result = await session.execute(stmt)
@@ -325,21 +370,38 @@ async def nombre_pjs_en_sesion(session, id_session: int) -> list[str]:
     caracteres. Así cada acompañante ocupa su slot numérico en la
     tarjeta de la sesión.
     """
+    slots = await slots_pjs_en_sesion(session, id_session)
+    return [nombre for nombre, _ in slots]
+
+
+async def slots_pjs_en_sesion(
+    session, id_session: int
+) -> list[tuple[str, int | None]]:
+    """Como `nombre_pjs_en_sesion`, pero con el `pj.id` real por slot.
+
+    Cada slot es `(nombre_a_mostrar, pj_id | None)`:
+      - PJ apuntado real → `(persona.nombre, pj.id)`.
+      - Acompañante sin Telegram → `("Invitado-<host>"[:20], None)` (no
+        son PJs reales, solo contador del anfitrión).
+
+    Lo usa el render con deep-links (vista "Mis sesiones" del DM); para
+    el canal y el listado público se sigue usando `nombre_pjs_en_sesion`.
+    """
     stmt = (
-        select(Persona.nombre, SesionPJ.acompanantes)
+        select(Persona.nombre, SesionPJ.id_pj, SesionPJ.acompanantes)
         .select_from(SesionPJ)
         .join(Persona, Persona.id_pj == SesionPJ.id_pj)
         .where(SesionPJ.id_sesion == id_session)
         .order_by(SesionPJ.apuntada_en)
     )
     rows = (await session.execute(stmt)).all()
-    nombres: list[str] = []
-    for nombre, acompanantes in rows:
-        nombres.append(nombre)
+    slots: list[tuple[str, int | None]] = []
+    for nombre, pj_id, acompanantes in rows:
+        slots.append((nombre, pj_id))
         if acompanantes:
             invitado = f"Invitado-{nombre}"[:20]
-            nombres.extend([invitado] * acompanantes)
-    return nombres
+            slots.extend([(invitado, None)] * acompanantes)
+    return slots
 
 
 

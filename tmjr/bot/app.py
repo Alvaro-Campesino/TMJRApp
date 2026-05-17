@@ -6,7 +6,13 @@
 """
 from __future__ import annotations
 
-from telegram import BotCommand
+from telegram import (
+    BotCommand,
+    BotCommandScopeAllChatAdministrators,
+    BotCommandScopeAllGroupChats,
+    BotCommandScopeAllPrivateChats,
+    BotCommandScopeDefault,
+)
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -15,8 +21,11 @@ from telegram.ext import (
     filters,
 )
 
+import logging
+
 from tmjr.config import get_settings
 
+from .handlers.admin_tokens import publicar_pin, rotar_token
 from .handlers.cajas import caja_dispatcher
 from .handlers.crear_premisa import build_handler as build_crear_premisa
 from .handlers.crear_sesion import build_handler as build_crear_sesion
@@ -29,7 +38,7 @@ from .handlers.info_campania import info_campania
 from .handlers.invitados import mas1, menos1
 from .handlers.listar_juegos import listar_juegos
 from .handlers.listar_premisas import listar_premisas
-from .handlers.listar_sesiones import listar_sesiones
+from .handlers.listar_sesiones import mis_sesiones, sesiones_publicadas
 from .handlers.mi_perfil import build_editar_perfil_handler, ver_perfil
 from .handlers.perfil_dm import (
     abrir_editar_dm,
@@ -46,6 +55,12 @@ from .handlers.perfil_dm import (
 )
 from .handlers.proximamente import proximamente
 from .handlers.start import start
+from .handlers.suscripciones import (
+    desuscribirme,
+    dm_suscriptores,
+    mis_suscripciones,
+    toggle_suscripcion,
+)
 from .handlers.unirse import build_handler as build_unirse
 from .keyboards import CAJAS
 
@@ -54,17 +69,12 @@ from .keyboards import CAJAS
 # no rehacer set_my_commands cada fase. Los handlers que falten responden
 # "🚧 Próximamente" via el catch-all proximamente.
 BOT_COMMANDS: list[BotCommand] = [
-    BotCommand("start", "Registrarte / menú principal"),
-    BotCommand("help", "Cómo funciona el bot"),
-    BotCommand("crear_sesion", "Crear una nueva sesión"),
-    BotCommand("listar_sesiones", "Ver sesiones abiertas"),
-    BotCommand("listar_juegos", "Ver juegos del catálogo"),
-    BotCommand("mi_perfil", "Ver tu persona"),
-    BotCommand("crear_premisa", "Crear una premisa"),
-    BotCommand("listar_premisas", "Listar premisas"),
-    BotCommand("crear_campania", "Crear una campaña (próx.)"),
-    BotCommand("listar_campanias", "Listar campañas (próx.)"),
-    BotCommand("cancelar", "Cancelar flujo en curso"),
+    # Vacío a propósito: el menú nativo de "/" en el cliente no debe
+    # mostrar nada. La interacción habitual va por el mensaje fijado en
+    # el DM (botones inline ❓ Ayuda / 🏠 Inicio, ver `bot/menu_dm.py`)
+    # y por las cajas del ReplyKeyboard. Los comandos siguen funcionando
+    # si se teclean a mano: `/start`, `/help`, `/cancelar`,
+    # `/rotar_token`, `/publicar_pin`.
 ]
 
 
@@ -82,7 +92,24 @@ async def post_initialize(application: Application) -> None:
     """
     import logging
 
-    await application.bot.set_my_commands(BOT_COMMANDS)
+    # Comandos visibles SOLO en chats privados. En grupos / hilos / al
+    # listar como admin de grupo, vaciamos explícitamente para sobrescribir
+    # cualquier set_my_commands previo (Telegram persiste el último valor
+    # de cada scope hasta que se reemplaza). Limpiar también el scope
+    # Default cubre clientes antiguos que no implementan los scopes
+    # específicos y caerían en el fallback.
+    await application.bot.set_my_commands(
+        BOT_COMMANDS, scope=BotCommandScopeAllPrivateChats()
+    )
+    await application.bot.set_my_commands(
+        [], scope=BotCommandScopeAllGroupChats()
+    )
+    await application.bot.set_my_commands(
+        [], scope=BotCommandScopeAllChatAdministrators()
+    )
+    await application.bot.set_my_commands(
+        [], scope=BotCommandScopeDefault()
+    )
 
     # Importa para registrar formatters (premisa, juego, dm, sesion).
     from . import object_formatters  # noqa: F401
@@ -103,10 +130,12 @@ def _register_handlers(application: Application) -> None:
     only_private = filters.ChatType.PRIVATE
 
     # Comandos directos (solo en privado).
+    logging.warning("Registrando handler de /start")
     application.add_handler(CommandHandler("start", start, filters=only_private))
+    logging.warning("Handler de /start registrado")
     application.add_handler(CommandHandler("help", help_command, filters=only_private))
     application.add_handler(
-        CommandHandler("listar_sesiones", listar_sesiones, filters=only_private)
+        CommandHandler("listar_sesiones", sesiones_publicadas, filters=only_private)
     )
     application.add_handler(
         CommandHandler("listar_juegos", listar_juegos, filters=only_private)
@@ -116,6 +145,13 @@ def _register_handlers(application: Application) -> None:
     )
     application.add_handler(
         CommandHandler("mi_perfil", ver_perfil, filters=only_private)
+    )
+    # Comandos admin (whitelist en ADMIN_TELEGRAM_IDS).
+    application.add_handler(
+        CommandHandler("rotar_token", rotar_token, filters=only_private)
+    )
+    application.add_handler(
+        CommandHandler("publicar_pin", publicar_pin, filters=only_private)
     )
     # Las campañas se gestionan vía la caja, no hay /crear_campania ni
     # /listar_campanias directos por ahora.
@@ -141,6 +177,20 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(CallbackQueryHandler(mas1, pattern=r"^mas1_\d+$"))
     application.add_handler(CallbackQueryHandler(menos1, pattern=r"^menos1_\d+$"))
 
+    # Botones del mensaje fijado del DM (menú principal).
+    async def _menu_help(update, context):
+        if update.callback_query is not None:
+            await update.callback_query.answer()
+        await help_command(update, context)
+
+    async def _menu_start(update, context):
+        if update.callback_query is not None:
+            await update.callback_query.answer()
+        await start(update, context)
+
+    application.add_handler(CallbackQueryHandler(_menu_help, pattern=r"^menu_help$"))
+    application.add_handler(CallbackQueryHandler(_menu_start, pattern=r"^menu_start$"))
+
     # Callbacks de los submenús inline.
     application.add_handler(
         CallbackQueryHandler(ver_perfil, pattern=r"^caja_persona_ver$")
@@ -157,6 +207,11 @@ def _register_handlers(application: Application) -> None:
     application.add_handler(
         CallbackQueryHandler(
             ver_dm_juegos, pattern=r"^caja_persona_ver_dm_juegos$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            dm_suscriptores, pattern=r"^caja_persona_ver_dm_suscriptores$"
         )
     )
     application.add_handler(
@@ -183,13 +238,30 @@ def _register_handlers(application: Application) -> None:
     )
 
     application.add_handler(
-        CallbackQueryHandler(listar_sesiones, pattern=r"^caja_sesion_listar$")
+        CallbackQueryHandler(mis_sesiones, pattern=r"^caja_sesion_mis$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(
+            sesiones_publicadas, pattern=r"^caja_sesion_publicadas$"
+        )
     )
     application.add_handler(
         CallbackQueryHandler(listar_juegos, pattern=r"^caja_juegos_listar$")
     )
     application.add_handler(
         CallbackQueryHandler(listar_premisas, pattern=r"^caja_premisa_listar$")
+    )
+    # Suscripciones a premisas.
+    application.add_handler(
+        CallbackQueryHandler(
+            mis_suscripciones, pattern=r"^caja_persona_suscripciones$"
+        )
+    )
+    application.add_handler(
+        CallbackQueryHandler(toggle_suscripcion, pattern=r"^prem_suscr_\d+$")
+    )
+    application.add_handler(
+        CallbackQueryHandler(desuscribirme, pattern=r"^prem_desuscr_\d+$")
     )
     # Caja Campaña → Info (one-shot). Crear y Listar los absorben los
     # ConversationHandlers ya registrados arriba.

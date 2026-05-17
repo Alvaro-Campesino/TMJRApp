@@ -5,6 +5,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tmjr.db.models import DM, DMPremisa, Juego, Premisa
+from tmjr.services import text_match
 
 
 async def crear_premisa(
@@ -69,6 +70,28 @@ async def list_all_premisas(session: AsyncSession) -> list[Premisa]:
     """Catálogo global de premisas, ordenado alfabéticamente por nombre."""
     result = await session.execute(select(Premisa).order_by(Premisa.nombre))
     return list(result.scalars().all())
+
+
+async def buscar_premisas_similares(
+    session: AsyncSession,
+    nombre: str,
+    *,
+    score_cutoff: int = text_match.SIMILARITY_THRESHOLD,
+    limit: int = 5,
+) -> list[tuple[int, str, int]]:
+    """Premisas del catálogo cuyo nombre parece duplicado de `nombre`.
+
+    Devuelve (id, nombre, score) ordenado por score desc, filtrado por
+    `score_cutoff` (default 80). Pensado para invocarse antes de crear
+    una premisa nueva y mostrar al usuario los candidatos parecidos.
+    """
+    todas = await list_all_premisas(session)
+    return text_match.buscar_similares(
+        [(p.id, p.nombre) for p in todas],
+        nombre,
+        score_cutoff=score_cutoff,
+        limit=limit,
+    )
 
 
 async def list_premisas_for_dm(

@@ -27,7 +27,12 @@ async def _persona_pj(session, telegram_id: int, nombre: str = "PJ") -> int:
     persona, _ = await personas_svc.get_or_create_persona(
         session, telegram_id=telegram_id, nombre=nombre
     )
-    pj = await personas_svc.ensure_pj(session, persona, nombre=nombre)
+    # En el helper actualizamos también el nombre de la persona, porque
+    # ahora el "nombre del PJ" ES `Persona.nombre` (no hay PJ.nombre).
+    if persona.nombre != nombre:
+        persona.nombre = nombre
+        await session.commit()
+    pj = await personas_svc.ensure_pj(session, persona)
     return pj.id
 
 
@@ -208,9 +213,9 @@ async def test_update_sesion_aplica_y_valida_plazas(session):
 
 
 async def test_invitados_add_remove_y_borrar_sesion_limpia(session):
-    """add_invitado / remove_ultimo_invitado (LIFO) y limpieza al borrar sesión."""
+    """add_invitado / remove_ultimo_invitado sobre acompanantes y borrar sesión."""
     from sqlalchemy import select
-    from tmjr.db.models import PJ, Sesion, SesionPJ
+    from tmjr.db.models import Sesion, SesionPJ
 
     id_dm = await _persona_dm(session, 400)
     id_juego = await _juego(session, "JuegoInv")
@@ -223,88 +228,154 @@ async def test_invitados_add_remove_y_borrar_sesion_limpia(session):
     # Apuntar al anfitrión.
     await svc.apuntar_pj(session, sesion_id=s.id, pj_id=anfitrion)
 
-    # Añadir 2 invitados.
-    inv1 = await svc.add_invitado(
+    # +1 dos veces: acompanantes pasa a 2.
+    sp1 = await svc.add_invitado(
         session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-        anfitrion_nombre_visible="Alvaro",
     )
-    inv2 = await svc.add_invitado(
+    assert sp1.acompanantes == 1
+    sp2 = await svc.add_invitado(
         session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-        anfitrion_nombre_visible="Alvaro",
     )
-    assert inv1.nombre == "Invitado-Alvaro"
-    assert inv1.id_anfitrion == anfitrion
-    assert inv2.id_anfitrion == anfitrion
+    assert sp2.acompanantes == 2
 
-    # 4ª plaza: aún cabe; 5ª: explota con SesionLlenaError (anfitrion + 2 inv = 3, 1 plaza libre).
-    await svc.add_invitado(
-        session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-        anfitrion_nombre_visible="Alvaro",
-    )
+    # 4ª plaza: aún cabe; 5ª: explota con SesionLlenaError (1 + 3 = 4 plazas).
+    await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=anfitrion)
     with pytest.raises(svc.SesionLlenaError):
-        await svc.add_invitado(
-            session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-            anfitrion_nombre_visible="Alvaro",
-        )
+        await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=anfitrion)
 
-    # remove_ultimo_invitado: LIFO → quita el último creado.
+    # remove_ultimo_invitado: decrementa acompanantes.
     assert await svc.remove_ultimo_invitado(
         session, sesion_id=s.id, anfitrion_pj_id=anfitrion
     ) is True
-    apuntados = (
+    sp = (
         await session.execute(
-            select(PJ.nombre)
-            .join(SesionPJ, SesionPJ.id_pj == PJ.id)
+            select(SesionPJ)
             .where(SesionPJ.id_sesion == s.id)
-            .where(PJ.id_anfitrion == anfitrion)
+            .where(SesionPJ.id_pj == anfitrion)
         )
-    ).scalars().all()
-    assert len(apuntados) == 2  # quedaban 3, ahora 2
+    ).scalar_one()
+    assert sp.acompanantes == 2
 
-    # Borrar sesión: limpia los 2 invitados restantes.
+    # Borrar sesión: limpia la fila de sesion_pj.
     await svc.borrar_sesion(session, s)
     assert await session.get(Sesion, s.id) is None
-    invitados_huerfanos = (
+    sp_rows = (
         await session.execute(
-            select(PJ).where(PJ.id_anfitrion == anfitrion)
+            select(SesionPJ).where(SesionPJ.id_sesion == s.id)
         )
     ).scalars().all()
-    assert invitados_huerfanos == []
+    assert sp_rows == []
 
 
-async def test_nombre_pjs_en_sesion_mezcla_normales_e_invitados(session):
-    """Devuelve nombres en orden de apuntada_en; invitados truncados a 20 chars."""
+async def test_add_invitado_falla_si_anfitrion_no_apuntado(session):
+    """Si el anfitrión no está apuntado a la sesión, +1 lanza AnfitrionNoApuntadoError."""
+    id_dm = await _persona_dm(session, 405)
+    id_juego = await _juego(session, "JuegoInvAnf")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=datetime(2030, 9, 18, 18, 0),
+    )
+    pj = await _persona_pj(session, 406, "NoApuntado")
+    with pytest.raises(svc.AnfitrionNoApuntadoError):
+        await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=pj)
+
+
+async def test_crear_sesion_con_plazas_minimas_valida_rango(session):
+    """`plazas_minimas` debe estar en [0, plazas_totales]."""
+    id_dm = await _persona_dm(session, 700)
+    id_juego = await _juego(session, "Jmin")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=datetime(2030, 8, 1, 18, 0),
+        plazas_totales=5, plazas_minimas=3,
+    )
+    assert s.plazas_minimas == 3
+
+    import pytest
+    with pytest.raises(ValueError):
+        await svc.crear_sesion(
+            session, id_dm=id_dm, id_juego=id_juego,
+            fecha=datetime(2030, 8, 2, 18, 0),
+            plazas_totales=4, plazas_minimas=5,
+        )
+
+
+def test_cruce_minimo_arriba_abajo_y_none():
+    """Helper de detección de cruce del umbral mínimo."""
+    # Sin mínimo → siempre None
+    assert svc.cruce_minimo(0, 5, 0) is None
+    # Subir cruzando: antes < min, después >= min
+    assert svc.cruce_minimo(1, 3, 3) == "arriba"
+    assert svc.cruce_minimo(0, 4, 3) == "arriba"
+    # Bajar cruzando: antes >= min, después < min
+    assert svc.cruce_minimo(3, 2, 3) == "abajo"
+    assert svc.cruce_minimo(5, 0, 3) == "abajo"
+    # Sin cruce: ambos por encima o ambos por debajo
+    assert svc.cruce_minimo(4, 5, 3) is None
+    assert svc.cruce_minimo(0, 1, 3) is None
+    # Quedarse exactamente en el mínimo no es cruce si ya estaba allí
+    assert svc.cruce_minimo(3, 3, 3) is None
+
+
+async def test_update_sesion_plazas_minimas_no_supera_total(session):
+    """No se puede subir el mínimo por encima del total existente."""
+    id_dm = await _persona_dm(session, 701)
+    id_juego = await _juego(session, "Jmin2")
+    s = await svc.crear_sesion(
+        session, id_dm=id_dm, id_juego=id_juego,
+        fecha=datetime(2030, 8, 3, 18, 0),
+        plazas_totales=4, plazas_minimas=0,
+    )
+    import pytest
+    with pytest.raises(ValueError):
+        await svc.update_sesion(session, s, plazas_minimas=5)
+
+
+async def test_nombre_pjs_en_sesion_expande_acompanantes(session):
+    """Cada acompañante ocupa un slot detrás de su anfitrión; truncado a 20 chars."""
     id_dm = await _persona_dm(session, 420)
     id_juego = await _juego(session, "JuegoNombres")
     s = await svc.crear_sesion(
         session, id_dm=id_dm, id_juego=id_juego,
-        fecha=datetime(2030, 9, 17, 18, 0), plazas_totales=5,
+        fecha=datetime(2030, 9, 17, 18, 0), plazas_totales=6,
     )
 
     pj_normal = await _persona_pj(session, 421, "Marta")
-    anfitrion = await _persona_pj(session, 422, "Alvaro")
+    anfitrion_corto = await _persona_pj(session, 422, "Alvaro")
+    anfitrion_largo = await _persona_pj(
+        session, 423, "NombreLarguisimoQueSeTrunca"
+    )
 
     await svc.apuntar_pj(session, sesion_id=s.id, pj_id=pj_normal)
-    await svc.apuntar_pj(session, sesion_id=s.id, pj_id=anfitrion)
-    # Invitado con nombre corto: cabe entero.
-    await svc.add_invitado(
-        session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-        anfitrion_nombre_visible="Alvaro",
-    )
-    # Invitado con nombre largo: debe truncarse a 20 chars en la lista.
-    await svc.add_invitado(
-        session, sesion_id=s.id, anfitrion_pj_id=anfitrion,
-        anfitrion_nombre_visible="NombreLarguisimoQueSeTrunca",
-    )
+    await svc.apuntar_pj(session, sesion_id=s.id, pj_id=anfitrion_corto)
+    await svc.apuntar_pj(session, sesion_id=s.id, pj_id=anfitrion_largo)
+    # Alvaro trae 2 invitados (caben en su slot).
+    await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=anfitrion_corto)
+    await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=anfitrion_corto)
+    # El anfitrión de nombre largo trae 1: se trunca a 20 chars en el slot.
+    await svc.add_invitado(session, sesion_id=s.id, anfitrion_pj_id=anfitrion_largo)
 
     nombres = await svc.nombre_pjs_en_sesion(session, s.id)
     assert nombres == [
-        "Marta",            # PJ normal: nombre de la Persona
-        "Alvaro",           # anfitrión: nombre de la Persona
-        "Invitado-Alvaro",  # invitado corto, sin truncar
+        "Marta",
+        "Alvaro",
+        "Invitado-Alvaro",
+        "Invitado-Alvaro",
+        "NombreLarguisimoQueSeTrunca",  # el nombre del anfitrión NO se trunca
         "Invitado-NombreLargu",  # invitado truncado a 20 chars totales
     ]
-    assert len(nombres[3]) == 20
+    assert len(nombres[5]) == 20
+
+    # `slots_pjs_en_sesion` devuelve lo mismo pero con el pj_id por slot:
+    # PJ apuntado → su id; acompañante → None.
+    slots = await svc.slots_pjs_en_sesion(session, s.id)
+    assert [n for n, _ in slots] == nombres
+    pj_ids = [pid for _, pid in slots]
+    assert pj_ids[0] == pj_normal
+    assert pj_ids[1] == anfitrion_corto
+    assert pj_ids[2] is None and pj_ids[3] is None  # acompañantes
+    assert pj_ids[4] == anfitrion_largo
+    assert pj_ids[5] is None
 
 
 async def test_remove_ultimo_invitado_sin_invitados_devuelve_false(session):

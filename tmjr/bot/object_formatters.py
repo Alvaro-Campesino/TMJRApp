@@ -12,8 +12,8 @@ from html import escape
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from tmjr.bot.object_links import register_formatter
-from tmjr.db.models import Campania, DM, Juego, Premisa, Sesion
+from tmjr.bot.object_links import build_object_link, register_formatter
+from tmjr.db.models import Campania, DM, Juego, PJ, Premisa, Sesion
 from tmjr.services import campanias as campanias_svc
 from tmjr.services import juegos as juegos_svc
 from tmjr.services import personas as personas_svc
@@ -43,7 +43,7 @@ async def _format_premisa(session: AsyncSession, obj_id: int) -> str | None:
 
 
 async def _format_juego(session: AsyncSession, obj_id: int) -> str | None:
-    """Ficha de juego: nombre + editorial + biblioteca + IBAN + descripción."""
+    """Ficha de juego: nombre + editorial + biblioteca + ISBN + descripción."""
     j = await session.get(Juego, obj_id)
     if j is None:
         return None
@@ -52,8 +52,8 @@ async def _format_juego(session: AsyncSession, obj_id: int) -> str | None:
         lines.append(f"🏢 Editorial: {escape(j.editorial)}")
     if j.disponible_en_biblioteca:
         lines.append("📚 Disponible en la biblioteca")
-    if j.iban:
-        lines.append(f"💳 IBAN: <code>{escape(j.iban)}</code>")
+    if j.ISBN:
+        lines.append(f"💳 ISBN: <code>{escape(j.ISBN)}</code>")
     if j.descripcion:
         lines.append("")
         lines.append(escape(j.descripcion))
@@ -82,8 +82,10 @@ async def _format_dm(session: AsyncSession, obj_id: int) -> str | None:
     if premisas:
         lines.append("")
         lines.append("📜 <b>Premisas:</b>")
+        # Cada premisa es un deep-link a su ficha (obj_premisa_<id>);
+        # desde allí el usuario tiene el botón de suscripción.
         for p in premisas:
-            lines.append(f"  • {escape(p.nombre)}")
+            lines.append(f"  • {build_object_link('premisa', p.id, p.nombre)}")
     return "\n".join(lines)
 
 
@@ -124,11 +126,31 @@ async def _format_campania(session: AsyncSession, obj_id: int) -> str | None:
     if pjs_fijos:
         lines.append("")
         lines.append("👥 <b>PJs fijos:</b>")
-        for p in pjs_fijos:
-            lines.append(f"  • {escape(p.nombre)}")
+        for _pj, pj_nombre in pjs_fijos:
+            lines.append(f"  • {escape(pj_nombre)}")
     else:
         lines.append("")
         lines.append("<i>Sin PJs fijos todavía.</i>")
+    return "\n".join(lines)
+
+
+async def _format_pj(session: AsyncSession, obj_id: int) -> str | None:
+    """Ficha de PJ: nombre (de la persona enlazada) + descripción.
+
+    El nombre del PJ es siempre el de la `Persona` con `id_pj == pj.id`.
+    No exponemos otros datos de la persona (juegos/premisas pertenecen
+    a su perfil DM, no al PJ) para preservar la privacidad cuando un DM
+    abre la ficha de un PJ apuntado a su sesión.
+    """
+    pj = await session.get(PJ, obj_id)
+    if pj is None:
+        return None
+    persona = await personas_svc.get_persona_by_pj(session, pj.id)
+    nombre = persona.nombre if persona is not None else f"PJ #{pj.id}"
+    lines = [f"🎭 <b>PJ:</b> {escape(nombre)}"]
+    if pj.descripcion:
+        lines.append("")
+        lines.append(escape(pj.descripcion))
     return "\n".join(lines)
 
 
@@ -137,3 +159,4 @@ register_formatter("juego", _format_juego)
 register_formatter("dm", _format_dm)
 register_formatter("sesion", _format_sesion)
 register_formatter("campania", _format_campania)
+register_formatter("pj", _format_pj)

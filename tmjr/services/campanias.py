@@ -122,28 +122,39 @@ async def remove_pj_fijo(
 
 async def list_pjs_fijos(
     session: AsyncSession, id_campania: int
-) -> list[PJ]:
-    """PJs fijos de la campaña, ordenados por nombre."""
+) -> list[tuple[PJ, str]]:
+    """PJs fijos de la campaña como (pj, persona_nombre) ordenados por nombre.
+
+    El nombre del PJ es el de su Persona (no hay PJ.nombre): se hace
+    join para que los callers tengan el nombre sin segunda query.
+    """
     stmt = (
-        select(PJ)
+        select(PJ, Persona.nombre)
         .join(CampaniaPJFijo, CampaniaPJFijo.id_pj == PJ.id)
+        .join(Persona, Persona.id_pj == PJ.id)
         .where(CampaniaPJFijo.id_campania == id_campania)
-        .order_by(PJ.nombre)
+        .order_by(Persona.nombre)
     )
-    return list((await session.execute(stmt)).scalars().all())
+    return [(pj, nombre) for pj, nombre in (await session.execute(stmt)).all()]
 
 
 async def list_pjs_no_fijos(
     session: AsyncSession, id_campania: int
-) -> list[PJ]:
-    """PJs registrados que NO son fijos de la campaña — para el picker
-    'Añadir PJ a la campaña'.
+) -> list[tuple[PJ, str]]:
+    """PJs registrados que NO son fijos de la campaña, con nombre de Persona.
+
+    Mismo formato que `list_pjs_fijos`: lista de (pj, persona_nombre).
     """
     sub = select(CampaniaPJFijo.id_pj).where(
         CampaniaPJFijo.id_campania == id_campania
     )
-    stmt = select(PJ).where(~PJ.id.in_(sub)).order_by(PJ.nombre)
-    return list((await session.execute(stmt)).scalars().all())
+    stmt = (
+        select(PJ, Persona.nombre)
+        .join(Persona, Persona.id_pj == PJ.id)
+        .where(~PJ.id.in_(sub))
+        .order_by(Persona.nombre)
+    )
+    return [(pj, nombre) for pj, nombre in (await session.execute(stmt)).all()]
 
 
 # ─────────────────────── Materialización en sesión ────────────────
@@ -171,7 +182,7 @@ async def materializar_pjs_a_sesion(
         ).scalars().all()
     )
     nuevos = 0
-    for pj in fijos:
+    for pj, _nombre in fijos:
         if pj.id in existentes:
             continue
         session.add(SesionPJ(id_sesion=sesion.id, id_pj=pj.id))
@@ -184,15 +195,15 @@ async def materializar_pjs_a_sesion(
 async def list_telegram_de_pjs_fijos(
     session: AsyncSession, id_campania: int
 ) -> list[tuple[int, str]]:
-    """Devuelve (telegram_id, pj.nombre) para cada PJ fijo de la campaña.
+    """Devuelve (telegram_id, persona.nombre) para cada PJ fijo de la campaña.
 
-    Útil para mandar DM al publicar una nueva sesión.
+    El nombre del PJ es el de la persona. Útil para mandar DM al
+    publicar una nueva sesión.
     """
     stmt = (
-        select(Persona.telegram_id, PJ.nombre)
+        select(Persona.telegram_id, Persona.nombre)
         .select_from(CampaniaPJFijo)
-        .join(PJ, PJ.id == CampaniaPJFijo.id_pj)
-        .join(Persona, Persona.id_pj == PJ.id)
+        .join(Persona, Persona.id_pj == CampaniaPJFijo.id_pj)
         .where(CampaniaPJFijo.id_campania == id_campania)
     )
     result = await session.execute(stmt)

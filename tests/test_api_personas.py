@@ -67,15 +67,16 @@ async def test_post_dm_persona_inexistente(client):
 
 
 async def test_post_pj_crea_perfil(client):
+    """POST /personas/{id}/pj solo persiste descripción; el nombre vive en Persona."""
     persona = (await client.post(
-        "/personas", json={"telegram_id": 600, "nombre": "PJ"}
+        "/personas", json={"telegram_id": 600, "nombre": "Aria"}
     )).json()
     r = await client.post(
         f"/personas/{persona['id']}/pj",
-        json={"nombre": "Aria", "descripcion": "hechicera"},
+        json={"descripcion": "hechicera"},
     )
     assert r.status_code == 200, r.text
-    assert r.json()["nombre"] == "Aria"
+    assert r.json()["descripcion"] == "hechicera"
 
 
 async def test_post_pj_idempotente(client):
@@ -83,17 +84,18 @@ async def test_post_pj_idempotente(client):
         "/personas", json={"telegram_id": 700, "nombre": "PJ2"}
     )).json()
     pj1 = (await client.post(
-        f"/personas/{persona['id']}/pj", json={"nombre": "Primero"}
+        f"/personas/{persona['id']}/pj", json={"descripcion": "a"}
     )).json()
     pj2 = (await client.post(
-        f"/personas/{persona['id']}/pj", json={"nombre": "Segundo"}
+        f"/personas/{persona['id']}/pj", json={"descripcion": "b"}
     )).json()
     assert pj1["id"] == pj2["id"]
-    assert pj2["nombre"] == "Primero"  # mantiene el original
+    # Una segunda llamada con descripcion la sobreescribe.
+    assert pj2["descripcion"] == "b"
 
 
 async def test_post_pj_persona_inexistente(client):
-    r = await client.post("/personas/99999/pj", json={"nombre": "Nadie"})
+    r = await client.post("/personas/99999/pj", json={"descripcion": "x"})
     assert r.status_code == 404
 
 

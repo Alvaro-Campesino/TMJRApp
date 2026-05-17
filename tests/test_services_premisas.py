@@ -144,11 +144,11 @@ async def test_campanias_flow(session):
     persona1, _ = await personas_svc.get_or_create_persona(
         session, telegram_id=501, nombre="Jugador1"
     )
-    pj1 = await personas_svc.ensure_pj(session, persona1, nombre="PJ-1")
+    pj1 = await personas_svc.ensure_pj(session, persona1)
     persona2, _ = await personas_svc.get_or_create_persona(
         session, telegram_id=502, nombre="Jugador2"
     )
-    pj2 = await personas_svc.ensure_pj(session, persona2, nombre="PJ-2")
+    pj2 = await personas_svc.ensure_pj(session, persona2)
 
     assert await camp_svc.add_pj_fijo(
         session, id_campania=c.id, id_pj=pj1.id
@@ -160,8 +160,10 @@ async def test_campanias_flow(session):
         session, id_campania=c.id, id_pj=pj2.id
     ) is True
 
+    # `list_pjs_fijos` devuelve [(PJ, persona_nombre)]; el nombre del PJ
+    # es siempre el de la persona (Jugador1/Jugador2 aquí).
     fijos = await camp_svc.list_pjs_fijos(session, c.id)
-    assert {p.nombre for p in fijos} == {"PJ-1", "PJ-2"}
+    assert {nombre for _, nombre in fijos} == {"Jugador1", "Jugador2"}
 
     # Crear una sesión nº2 de la campaña y materializar PJs.
     s2 = await ses_svc.crear_sesion(
@@ -174,16 +176,17 @@ async def test_campanias_flow(session):
     nuevos = await camp_svc.materializar_pjs_a_sesion(session, s2)
     assert nuevos == 2
 
-    # list_telegram_de_pjs_fijos.
+    # list_telegram_de_pjs_fijos devuelve el nombre de la Persona (no
+    # hay PJ.nombre; el nombre del PJ ES el de la persona).
     avisos = await camp_svc.list_telegram_de_pjs_fijos(session, c.id)
-    assert sorted(avisos) == sorted([(501, "PJ-1"), (502, "PJ-2")])
+    assert sorted(avisos) == sorted([(501, "Jugador1"), (502, "Jugador2")])
 
     # Eliminar pj1: debería borrarlo de fijos y de la sesión futura s2.
     assert await camp_svc.remove_pj_fijo(
         session, id_campania=c.id, id_pj=pj1.id
     ) is True
     fijos2 = await camp_svc.list_pjs_fijos(session, c.id)
-    assert {p.nombre for p in fijos2} == {"PJ-2"}
+    assert {nombre for _, nombre in fijos2} == {"Jugador2"}
 
     # pj1 ya no debe estar en sesion_pj de s2 (futura).
     from sqlalchemy import select

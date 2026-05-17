@@ -142,8 +142,16 @@ async def pick_campo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         )
         return EditarSesion.FECHA
     if campo == "plazas":
-        await query.edit_message_text("¿Cuántas plazas? (1-6)")
+        await query.edit_message_text("¿Cuántas plazas máximas? (1-10)")
         return EditarSesion.PLAZAS
+    if campo == "plazas_min":
+        async with async_session_maker() as session:
+            sesion = await session.get(Sesion, context.user_data["editar_sesion_id"])
+            plazas_max = sesion.plazas_totales if sesion else 10
+        await query.edit_message_text(
+            f"¿Cuántas plazas mínimas? (0-{plazas_max}, o /skip para 0 = sin mínimo)"
+        )
+        return EditarSesion.PLAZAS_MINIMAS
     if campo == "borrar":
         await query.edit_message_text(
             "⚠️ Esto borrará la sesión, su tarjeta del canal y notificará "
@@ -266,11 +274,35 @@ async def recibir_plazas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     raw = (update.effective_message.text or "").strip()
     try:
         n = int(raw)
-        assert 1 <= n <= 6
+        assert 1 <= n <= 10
     except (ValueError, AssertionError):
-        await update.effective_message.reply_text("Tiene que ser un número entre 1 y 6.")
+        await update.effective_message.reply_text("Tiene que ser un número entre 1 y 10.")
         return EditarSesion.PLAZAS
     return await _persistir(update, context, plazas_totales=n)
+
+
+async def recibir_plazas_minimas(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Recoge el nuevo mínimo. `/skip` o vacío → 0 (sin mínimo)."""
+    raw = (update.effective_message.text or "").strip()
+    sesion_id = context.user_data["editar_sesion_id"]
+    async with async_session_maker() as session:
+        sesion = await session.get(Sesion, sesion_id)
+    plazas_max = sesion.plazas_totales if sesion else 10
+
+    if raw.lower() in {"/skip", ""}:
+        n_min = 0
+    else:
+        try:
+            n_min = int(raw)
+            assert 0 <= n_min <= plazas_max
+        except (ValueError, AssertionError):
+            await update.effective_message.reply_text(
+                f"Tiene que ser un número entre 0 y {plazas_max}."
+            )
+            return EditarSesion.PLAZAS_MINIMAS
+    return await _persistir(update, context, plazas_minimas=n_min)
 
 
 # ─────────────────────────── persistir + republicar ───────────────
@@ -389,10 +421,16 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def build_handler() -> ConversationHandler:
-    """ConversationHandler de editar sesión. Entry: caja_sesion_editar."""
+    """ConversationHandler de editar sesión.
+
+    Entry: el botón ✏️ Editar de la tarjeta listada en 'Mis sesiones'
+    emite `edsespick_<id>` y se salta el picker (el id ya viene en el
+    callback). El antiguo flujo `caja_sesion_editar` ya no se usa: el
+    submenú dinámico de Sesión (`submenu_sesion`) ya no ofrece ese botón.
+    """
     return ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(_entry, pattern=r"^caja_sesion_editar$"),
+            CallbackQueryHandler(pick_sesion, pattern=r"^edsespick_\d+$"),
         ],
         states={
             EditarSesion.PICK: [
@@ -424,6 +462,12 @@ def build_handler() -> ConversationHandler:
             ],
             EditarSesion.PLAZAS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recibir_plazas),
+            ],
+            EditarSesion.PLAZAS_MINIMAS: [
+                MessageHandler(
+                    filters.TEXT & ~filters.COMMAND, recibir_plazas_minimas
+                ),
+                CommandHandler("skip", recibir_plazas_minimas),
             ],
             EditarSesion.CONFIRMAR_BORRAR: [
                 CallbackQueryHandler(

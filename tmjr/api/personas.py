@@ -48,7 +48,7 @@ async def crear_perfil_pj(
     if persona is None:
         raise HTTPException(status_code=404, detail="Persona no encontrada")
     return await svc.ensure_pj(
-        session, persona, nombre=payload.nombre, descripcion=payload.descripcion
+        session, persona, descripcion=payload.descripcion
     )
 
 

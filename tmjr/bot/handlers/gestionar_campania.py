@@ -156,7 +156,7 @@ async def pick_pjs_accion(
             await query.edit_message_text(
                 "Elige un PJ para añadir como fijo:",
                 reply_markup=picker_pjs(
-                    [(p.id, p.nombre) for p in pjs], prefix="cmppjadd"
+                    [(p.id, nombre) for p, nombre in pjs], prefix="cmppjadd"
                 ),
             )
             return GestionarCampania.PJ_ADD_PICK
@@ -172,7 +172,7 @@ async def pick_pjs_accion(
                 "Elige un PJ para eliminar de la campaña "
                 "(se quitará también de las sesiones futuras):",
                 reply_markup=picker_pjs(
-                    [(p.id, p.nombre) for p in pjs], prefix="cmppjrm"
+                    [(p.id, nombre) for p, nombre in pjs], prefix="cmppjrm"
                 ),
             )
             return GestionarCampania.PJ_RM_PICK

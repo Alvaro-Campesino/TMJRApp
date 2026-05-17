@@ -52,6 +52,49 @@ def test_formatear_muestra_ambas_descripciones():
     assert "Aventura clásica" in txt
 
 
+def test_formatear_link_pjs_envuelve_pj_apuntados_y_no_invitados():
+    """Con `link_pjs=True`, los PJ reales se envuelven en <a href=...>
+    pero los acompañantes (pj_id=None) quedan como texto plano.
+
+    Sin bot username cacheado, `build_object_link` devuelve solo el label
+    escapado: por eso aquí cacheamos uno temporalmente para que el test
+    afirme el envoltorio HTML.
+    """
+    from tmjr.bot import object_links
+
+    prev = object_links.get_bot_username()
+    object_links.set_bot_username("test_bot")
+    try:
+        slots = [
+            ("Marta", 11),                # PJ real
+            ("Alvaro", 12),               # anfitrión
+            ("Invitado-Alvaro", None),   # acompañante
+        ]
+        txt = _formatear(_sesion_demo(), slots=slots, link_pjs=True)
+        assert 'obj_pj_11">Marta</a>' in txt
+        assert 'obj_pj_12">Alvaro</a>' in txt
+        # Acompañantes nunca tienen link, ni siquiera con link_pjs=True
+        assert "Invitado-Alvaro" in txt
+        assert 'obj_pj_None' not in txt
+    finally:
+        object_links.set_bot_username(prev)
+
+
+def test_formatear_sin_link_pjs_no_pone_anchors():
+    """Con `link_pjs=False` (default) ningún slot lleva <a href=...>."""
+    from tmjr.bot import object_links
+
+    prev = object_links.get_bot_username()
+    object_links.set_bot_username("test_bot")
+    try:
+        slots = [("Marta", 11)]
+        txt = _formatear(_sesion_demo(), slots=slots, link_pjs=False)
+        assert "<a href" not in txt
+        assert "Marta" in txt
+    finally:
+        object_links.set_bot_username(prev)
+
+
 async def test_publicar_sesion_falla_sin_chat_id(monkeypatch):
     get_settings.cache_clear()
     # Set explícito a vacío: el validador lo convierte a None

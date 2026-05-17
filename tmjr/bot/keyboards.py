@@ -39,7 +39,6 @@ def menu_cajas() -> ReplyKeyboardMarkup:
 # El callback que se emite es `caja_<obj>_<action>`.
 
 _SUBMENUS: dict[str, list[tuple[str, str, bool]]] = {
-    "sesion":   [("Crear", "crear", True),  ("Listar", "listar", True),  ("Editar", "editar", True)],
     "premisa":  [("Crear", "crear", True),  ("Listar", "listar", True),  ("Editar", "editar", True)],
     "campania": [("Crear", "crear", True),  ("Listar", "listar", True),  ("ℹ️ Info", "info", True)],
     "juegos":   [("Listar", "listar", True), ("Crear", "crear", False), ("Editar", "editar", False)],
@@ -64,6 +63,7 @@ def submenu_persona(es_dm: bool) -> InlineKeyboardMarkup:
       primera fila.
     - Si la persona no es DM: segunda fila con 'Crear perfil DM'.
     - Si ya es DM: segunda fila con 'Ver perfil DM' y 'Editar perfil DM'.
+    - Tercera fila siempre: '🔔 Mis suscripciones' (premisas suscritas).
 
     Sigue el patrón de callbacks `caja_persona_<accion>`.
     """
@@ -88,11 +88,43 @@ def submenu_persona(es_dm: bool) -> InlineKeyboardMarkup:
                 "Crear perfil DM", callback_data="caja_persona_crear_dm"
             ),
         ])
+    rows.append([
+        InlineKeyboardButton(
+            "🔔 Mis suscripciones",
+            callback_data="caja_persona_suscripciones",
+        ),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def submenu_sesion(es_dm: bool) -> InlineKeyboardMarkup:
+    """Submenú dinámico de la caja Sesión.
+
+    - Si la persona NO es DM: solo 'Sesiones publicadas' (a las que se
+      puede apuntar).
+    - Si es DM: 'Crear', 'Mis sesiones' (las suyas con botón ✏️ Editar
+      por tarjeta) y 'Sesiones publicadas'.
+    """
+    rows = []
+    if es_dm:
+        rows.append(
+            [InlineKeyboardButton("Crear", callback_data="caja_sesion_crear")]
+        )
+        rows.append([
+            InlineKeyboardButton(
+                "Mis sesiones", callback_data="caja_sesion_mis"
+            )
+        ])
+    rows.append([
+        InlineKeyboardButton(
+            "Sesiones publicadas", callback_data="caja_sesion_publicadas"
+        )
+    ])
     return InlineKeyboardMarkup(rows)
 
 
 def vista_perfil_dm() -> InlineKeyboardMarkup:
-    """Botones para ver el listado de juegos / premisas del DM."""
+    """Botones para ver el listado de juegos / premisas / suscriptores del DM."""
     return InlineKeyboardMarkup(
         [
             [InlineKeyboardButton(
@@ -101,8 +133,86 @@ def vista_perfil_dm() -> InlineKeyboardMarkup:
             [InlineKeyboardButton(
                 "🎮 Mis juegos", callback_data="caja_persona_ver_dm_juegos"
             )],
+            [InlineKeyboardButton(
+                "👥 Suscriptores",
+                callback_data="caja_persona_ver_dm_suscriptores",
+            )],
         ]
     )
+
+
+def picker_duplicados(
+    candidatos: list[tuple[int, str, int]],
+    *,
+    prefix_existente: str,
+    callback_crear_igual: str,
+) -> InlineKeyboardMarkup:
+    """Picker para confirmación de duplicado tras búsqueda difusa.
+
+    Una fila por candidato con su nombre y % de similitud, callback
+    `<prefix_existente>_<id>`. Última fila con un botón "➕ Crear nueva
+    igualmente" que emite `callback_crear_igual`.
+    """
+    rows = [
+        [InlineKeyboardButton(
+            f"📌 {nombre} ({score}%)",
+            callback_data=f"{prefix_existente}_{obj_id}",
+        )]
+        for obj_id, nombre, score in candidatos
+    ]
+    rows.append([
+        InlineKeyboardButton(
+            "➕ Crear igualmente", callback_data=callback_crear_igual
+        )
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def menu_principal_inline() -> InlineKeyboardMarkup:
+    """Botones del mensaje fijado del DM con el bot.
+
+    Callbacks: `menu_help` y `menu_start`. Los CallbackQueryHandler en
+    `bot/app.py` reenvían a los mismos handlers que `/help` y `/start`.
+    """
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton("❓ Ayuda", callback_data="menu_help"),
+                InlineKeyboardButton("🏠 Inicio", callback_data="menu_start"),
+            ]
+        ]
+    )
+
+
+def boton_suscripcion_premisa(
+    premisa_id: int, suscrito: bool
+) -> InlineKeyboardMarkup:
+    """Botón toggle de suscripción para la tarjeta de una premisa.
+
+    Callback `prem_suscr_<id>`: el handler hace toggle según el estado
+    actual en BD (no fiarse del label).
+    """
+    label = "🔕 Suscrito ✓" if suscrito else "🔔 Suscribirse"
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton(label, callback_data=f"prem_suscr_{premisa_id}")]]
+    )
+
+
+def lista_mis_suscripciones(
+    premisas: list[tuple[int, str]],
+) -> InlineKeyboardMarkup:
+    """Teclado con un botón 'Borrarme' por premisa suscrita.
+
+    Callbacks: `prem_desuscr_<id>`.
+    """
+    rows = [
+        [InlineKeyboardButton(
+            f"🚪 Borrarme — {nombre}",
+            callback_data=f"prem_desuscr_{pid}",
+        )]
+        for pid, nombre in premisas
+    ]
+    return InlineKeyboardMarkup(rows)
 
 
 def submenu_editar_dm() -> InlineKeyboardMarkup:
@@ -180,6 +290,17 @@ def tarjeta_sesion(sesion_id: int) -> InlineKeyboardMarkup:
                 ),
             ],
         ]
+    )
+
+
+def tarjeta_sesion_editar(sesion_id: int) -> InlineKeyboardMarkup:
+    """Botón ✏️ Editar para la tarjeta de sesión en listado DM.
+
+    Reutiliza el callback `edsespick_<id>` del flujo de edición, que ahora
+    también es entry_point del ConversationHandler.
+    """
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("✏️ Editar", callback_data=f"edsespick_{sesion_id}")]]
     )
 
 
@@ -364,6 +485,9 @@ def submenu_editar_sesion() -> InlineKeyboardMarkup:
             [InlineKeyboardButton("Lugar", callback_data="edsescampo_lugar")],
             [InlineKeyboardButton("Fecha y hora", callback_data="edsescampo_fecha")],
             [InlineKeyboardButton("Plazas", callback_data="edsescampo_plazas")],
+            [InlineKeyboardButton(
+                "Plazas mínimas", callback_data="edsescampo_plazas_min"
+            )],
             [InlineKeyboardButton("🗑 Borrar sesión", callback_data="edsescampo_borrar")],
         ]
     )

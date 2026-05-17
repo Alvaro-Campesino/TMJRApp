@@ -4,7 +4,7 @@ Cuando el usuario pulsa una de las 5 cajas del teclado persistente, llega un
 mensaje de texto con el label de la caja. Este handler responde con el
 submenú inline (Crear / Listar / Editar) correspondiente.
 
-La caja Persona es especial: su submenú es dinámico y depende de si la
+Las cajas Persona y Sesión son dinámicas: su submenú depende de si la
 persona ya tiene perfil de DM o no.
 """
 from __future__ import annotations
@@ -20,6 +20,7 @@ from tmjr.bot.keyboards import (
     CAJA_SESION,
     submenu_objeto,
     submenu_persona,
+    submenu_sesion,
 )
 from tmjr.db import async_session_maker
 from tmjr.services import personas as personas_svc
@@ -42,7 +43,9 @@ async def caja_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     obj, titulo = entry
 
     if obj == "persona":
-        kb = await _submenu_persona_para_user(update.effective_user.id)
+        kb = submenu_persona(es_dm=await _es_dm(update.effective_user.id))
+    elif obj == "sesion":
+        kb = submenu_sesion(es_dm=await _es_dm(update.effective_user.id))
     else:
         kb = submenu_objeto(obj)
 
@@ -52,14 +55,12 @@ async def caja_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     )
 
 
-async def _submenu_persona_para_user(telegram_id: int):
-    """Construye el submenú de Persona consultando si la persona es DM.
+async def _es_dm(telegram_id: int) -> bool:
+    """¿La persona vinculada a este telegram_id tiene perfil de DM?
 
-    Si la persona aún no se ha registrado (no existe en BD), tratamos el
-    caso como 'no es DM' — el botón 'Crear perfil DM' avisará al usuario
-    de que primero debe usar /start.
+    Si la persona aún no se ha registrado (no existe en BD), devuelve
+    False — el flujo de DM/edición empuja al usuario a /start.
     """
     async with async_session_maker() as session:
         persona = await personas_svc.get_persona_by_telegram(session, telegram_id)
-    es_dm = persona is not None and persona.id_master is not None
-    return submenu_persona(es_dm=es_dm)
+    return persona is not None and persona.id_master is not None

@@ -88,6 +88,14 @@ async def get_dm(session: AsyncSession, dm_id: int) -> DM | None:
     return await session.get(DM, dm_id)
 
 
+async def get_persona_by_pj(session: AsyncSession, pj_id: int) -> Persona | None:
+    """Devuelve la persona que tiene este PJ (1:1 vía id_pj), o None."""
+    result = await session.execute(
+        select(Persona).where(Persona.id_pj == pj_id)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_persona_by_dm(session: AsyncSession, dm_id: int) -> Persona | None:
     """Devuelve la Persona enlazada a este DM (1:1 vía persona.id_master)."""
     result = await session.execute(
@@ -100,16 +108,24 @@ async def ensure_pj(
     session: AsyncSession,
     persona: Persona,
     *,
-    nombre: str,
     descripcion: str | None = None,
 ) -> PJ:
-    """Si la persona no tiene perfil PJ, lo crea y lo enlaza. Devuelve el PJ."""
+    """Si la persona no tiene perfil PJ, lo crea y lo enlaza. Devuelve el PJ.
+
+    El **nombre del PJ es el de la persona** (no se persiste aparte). Si
+    el PJ ya existe y se pasa `descripcion`, se sobreescribe la
+    descripción (útil para el flujo de "actualizar mis límites").
+    """
     if persona.id_pj is not None:
         pj = await session.get(PJ, persona.id_pj)
         if pj is not None:
+            if descripcion is not None:
+                pj.descripcion = descripcion
+                await session.commit()
+                await session.refresh(pj)
             return pj
 
-    pj = PJ(nombre=nombre, descripcion=descripcion)
+    pj = PJ(descripcion=descripcion)
     session.add(pj)
     await session.flush()
     persona.id_pj = pj.id

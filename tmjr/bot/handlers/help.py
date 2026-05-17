@@ -10,7 +10,10 @@ HELP_TEXT = (
     "sesiones de rol sin perderse entre mensajes.\n\n"
     "*Cómo funciona*\n"
     "1. Usa /start para registrarte (creas tu perfil de *Persona* _Jugadora_).\n"
-    "2. Si quieres dirigir, al crear una sesión damos de alta tu perfil de *DM*.\n"
+    "se puede usar /start en cualquier momento para iniciar el menú, "
+    "/cancelar para cancelar un flujo "
+    "y /help para mostrar esta ayuda"
+    "2. Si quieres dirigir, crea tu perfil de *DM*, en la sección *Persona* para poder crear una sesión.\n"
     "3. Al crear una sesión te pediremos que uses una *Premisa* esto es el nombre de la aventura con su descripción.\n"    
     "4. Como *DM* tendrás tus juegos favoritos disponibles, puedes gestionar tu propia lista, quitando o añadiendo. \n"
     "5. También puedes dar de alta una campaña, si tu *Sesión* no va a ser un _oneshot_.\n"
@@ -21,7 +24,8 @@ HELP_TEXT = (
     "*Cómo navegar*\n"
     "• Cajas del teclado: 👤 Persona, 🎲 Sesión, 📜 Premisa, 🏰 Campaña, 🎮 Juegos. "
     "Cada caja abre un submenú con Crear / Listar / Editar.\n"
-    "• Comandos directos (pulsa `/` para ver la lista completa).\n\n"
+    "• Mensaje fijado en este chat con botones ❓ Ayuda y 🏠 Inicio.\n"
+    "• Comandos directos tecleados a mano: `/start`, `/help`, `/cancelar`.\n\n"
     "Las opciones marcadas con 🚧 todavía no están listas."
 )
 

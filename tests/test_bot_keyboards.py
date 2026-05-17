@@ -118,6 +118,7 @@ def test_vista_perfil_dm_tiene_botones_de_listado():
     assert cbs == {
         "caja_persona_ver_dm_juegos",
         "caja_persona_ver_dm_premisas",
+        "caja_persona_ver_dm_suscriptores",
     }
 
 

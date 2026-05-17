@@ -38,6 +38,8 @@ def _formatear(
     juego_nombre: str | None = None,
     campania_id: int | None = None,
     campania_nombre: str | None = None,
+    slots: list[tuple[str, int | None]] | None = None,
+    link_pjs: bool = False,
 ) -> str:
     """Formatea la tarjeta de una sesión en HTML.
 
@@ -86,11 +88,28 @@ def _formatear(
     lines.append(f"📅 {sesion.fecha.strftime('%Y-%m-%d %H:%M')}")
     if sesion.lugar:
         lines.append(f"📍 {escape(sesion.lugar)}")
-    lines.append(f"🪑 {sesion.plazas_totales} plazas")
+    plazas_line = f"🪑 {sesion.plazas_totales} plazas"
+    if (sesion.plazas_minimas or 0) > 0:
+        plazas_line += f" (mínimo {sesion.plazas_minimas})"
+    lines.append(plazas_line)
 
     lines.append("<b>Jugadores apuntados:</b>")
-    for n in range(1, sesion.plazas_totales + 1):
-        lines.append(f"{n}. {escape(_get_item_by_index(jugadores, n))}")
+    if slots is not None:
+        for n in range(1, sesion.plazas_totales + 1):
+            try:
+                nombre, pj_id = slots[n - 1]
+            except IndexError:
+                lines.append(f"{n}. ")
+                continue
+            if link_pjs and pj_id is not None:
+                lines.append(
+                    f"{n}. {build_object_link('pj', pj_id, nombre)}"
+                )
+            else:
+                lines.append(f"{n}. {escape(nombre)}")
+    else:
+        for n in range(1, sesion.plazas_totales + 1):
+            lines.append(f"{n}. {escape(_get_item_by_index(jugadores, n))}")
 
     return "\n".join(lines)
 
@@ -133,6 +152,61 @@ async def _resolver_contexto_card(
     return dm_nombre, juego_nombre, campania_nombre
 
 
+async def render_tarjeta_sesion_html(sesion: Sesion) -> str:
+    """Genera el texto HTML de la tarjeta de una sesión, idéntico al del canal.
+
+    Carga internamente la premisa, la lista de jugadores (con acompañantes
+    expandidos) y el contexto para los deep-link. Útil para reutilizar el
+    mismo formato en mensajes DM (listado de sesiones, etc.) sin pasar
+    por `publicar_sesion`.
+    """
+    from tmjr.db import async_session_maker
+    from tmjr.services import sesiones as sesiones_svc
+
+    async with async_session_maker() as session:
+        premisa = (
+            await session.get(Premisa, sesion.id_premisa)
+            if sesion.id_premisa is not None else None
+        )
+        jugadores = await sesiones_svc.nombre_pjs_en_sesion(session, sesion.id)
+
+    dm_nombre, juego_nombre, campania_nombre = await _resolver_contexto_card(sesion)
+    return _formatear(
+        sesion, premisa, jugadores,
+        dm_nombre=dm_nombre, juego_nombre=juego_nombre,
+        campania_id=sesion.id_campania, campania_nombre=campania_nombre,
+    )
+
+
+async def render_tarjeta_sesion_dm_html(sesion: Sesion) -> str:
+    """Igual que `render_tarjeta_sesion_html` pero envolviendo los nombres
+    de los PJ apuntados en deep-links a su ficha (`obj_pj_<id>`).
+
+    Pensado para la vista "Mis sesiones" del DM en chat privado, donde
+    sí queremos que pueda consultar la descripción de los PJs apuntados.
+    En el canal y en la vista pública "Sesiones publicadas" seguimos
+    usando `render_tarjeta_sesion_html` (sin links), para preservar la
+    privacidad de los PJs.
+    """
+    from tmjr.db import async_session_maker
+    from tmjr.services import sesiones as sesiones_svc
+
+    async with async_session_maker() as session:
+        premisa = (
+            await session.get(Premisa, sesion.id_premisa)
+            if sesion.id_premisa is not None else None
+        )
+        slots = await sesiones_svc.slots_pjs_en_sesion(session, sesion.id)
+
+    dm_nombre, juego_nombre, campania_nombre = await _resolver_contexto_card(sesion)
+    return _formatear(
+        sesion, premisa,
+        dm_nombre=dm_nombre, juego_nombre=juego_nombre,
+        campania_id=sesion.id_campania, campania_nombre=campania_nombre,
+        slots=slots, link_pjs=True,
+    )
+
+
 async def publicar_sesion(
     bot: Bot,
     sesion: Sesion,
@@ -143,6 +217,10 @@ async def publicar_sesion(
 
     Resuelve internamente el nombre del DM y del juego para construir los
     deep-link, así los handlers no tienen que hacer ese lookup duplicado.
+
+    Si es la primera publicación (no edición) y la sesión cualifica (one-
+    shot con premisa o primera de campaña), envía DM a cada suscriptor de
+    la premisa con un deep-link a la sesión. Best-effort.
     """
     s = get_settings()
     if not s.telegram_chat_id:
@@ -156,7 +234,8 @@ async def publicar_sesion(
         campania_id=sesion.id_campania, campania_nombre=campania_nombre,
     )
 
-    if not sesion.telegram_message_id:
+    es_primera_publicacion = not sesion.telegram_message_id
+    if es_primera_publicacion:
         msg = await bot.send_message(
             chat_id=s.telegram_chat_id,
             message_thread_id=s.telegram_thread_id,
@@ -172,7 +251,74 @@ async def publicar_sesion(
             parse_mode=ParseMode.HTML,
             reply_markup=tarjeta_sesion(sesion.id),
         )
+
+    if es_primera_publicacion:
+        await _notificar_suscriptores_si_aplica(bot, sesion, premisa)
+
     return s.telegram_chat_id, s.telegram_thread_id, msg.message_id
+
+
+async def _notificar_suscriptores_si_aplica(
+    bot: Bot, sesion: Sesion, premisa: Premisa | None
+) -> None:
+    """Envía DM a los suscritos a la premisa si toca notificar.
+
+    Reglas (en `suscripciones.should_notify_subscribers`):
+      - one-shot con premisa → siempre.
+      - sesión de campaña → solo la primera.
+    Best-effort: cualquier fallo de Telegram se loguea y se sigue.
+    """
+    if premisa is None or sesion.id_premisa is None:
+        return
+
+    from tmjr.db import async_session_maker
+    from tmjr.services import personas as personas_svc
+    from tmjr.services import suscripciones as sub_svc
+
+    async with async_session_maker() as session:
+        if not await sub_svc.should_notify_subscribers(session, sesion):
+            return
+        suscriptores = await sub_svc.list_suscriptores(session, premisa.id)
+        dm_persona = (
+            await personas_svc.get_persona_by_dm(session, sesion.id_dm)
+            if sesion.id_dm is not None else None
+        )
+
+    dm_persona_id = dm_persona.id if dm_persona is not None else None
+    bot_username = get_bot_username()
+    deep_link = (
+        f"https://t.me/{bot_username}?start=apuntar_{sesion.id}"
+        if bot_username else None
+    )
+
+    titulo = sesion.nombre or premisa.nombre
+    fecha_str = sesion.fecha.strftime("%Y-%m-%d %H:%M")
+    enlace_html = (
+        f' <a href="{deep_link}">Ver sesión</a>' if deep_link else ""
+    )
+    texto = (
+        f"🔔 Se ha convocado una sesión de la premisa <b>{escape(premisa.nombre)}</b> "
+        f"a la que estás suscrita.\n\n"
+        f"<b>{escape(titulo)}</b>\n"
+        f"📅 {fecha_str}"
+        f"{enlace_html}"
+    )
+
+    for sus in suscriptores:
+        if sus.id == dm_persona_id:
+            continue
+        try:
+            await bot.send_message(
+                chat_id=sus.telegram_id,
+                text=texto,
+                parse_mode=ParseMode.HTML,
+            )
+        except TelegramError as exc:
+            logger.warning(
+                "No pude notificar a suscriptor %s (telegram_id=%s) de la "
+                "sesión %s: %s",
+                sus.id, sus.telegram_id, sesion.id, exc,
+            )
 
 
 async def limpiar_tarjetas_pasadas(

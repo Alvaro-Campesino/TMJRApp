@@ -35,7 +35,7 @@ class Juego(Base):
     disponible_en_biblioteca: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default="false"
     )
-    iban: Mapped[str | None] = mapped_column(String(34))
+    ISBN: Mapped[str | None] = mapped_column(String(34))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
@@ -62,10 +62,18 @@ class DMPremisa(Base):
 
 
 class PJ(Base):
+    """Persona Jugadora.
+
+    El **nombre del PJ es siempre el de la `Persona` enlazada** (vía
+    `Persona.id_pj`). Por eso esta tabla no tiene su propia columna
+    `nombre`: cualquier vista del PJ debe hacer join con `personas` para
+    obtenerlo. La descripción sí es propia del PJ (incluye preferencias
+    de juego, límites de contenido, etc.).
+    """
+
     __tablename__ = "pj"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    nombre: Mapped[str] = mapped_column(String(100), nullable=False)
     descripcion: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
@@ -94,6 +102,13 @@ class Persona(Base):
     id_master: Mapped[int | None] = mapped_column(ForeignKey("dm.id"), unique=True)
     filtro_contenido: Mapped[dict | None] = mapped_column(JsonCol)
     aceptada_normas: Mapped[bool] = mapped_column(Boolean, server_default="false")
+    registrado_via_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("token_invitacion.id", ondelete="SET NULL")
+    )
+    # message_id del mensaje fijado en el DM con el bot que actúa de "menú
+    # principal" (botones inline Ayuda / Inicio). Lo reescribimos en cada
+    # /start. Best-effort: si se pierde, se recupera al próximo /start.
+    menu_msg_id: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
     pj: Mapped[PJ | None] = relationship(foreign_keys=[id_pj], lazy="joined")
@@ -168,6 +183,7 @@ class Sesion(Base):
     numero: Mapped[int | None] = mapped_column(Integer)
     fecha: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     plazas_totales: Mapped[int] = mapped_column(Integer, nullable=False, server_default="5")
+    plazas_minimas: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     plazas_sin_reserva: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     telegram_chat_id: Mapped[str | None] = mapped_column(String(64))
     telegram_thread_id: Mapped[int | None] = mapped_column(Integer)
@@ -188,6 +204,30 @@ class SesionPJ(Base):
     apuntada_en: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
 
 
+class TokenInvitacion(Base):
+    """Token rotativo de invitación. Solo uno activo a la vez."""
+
+    __tablename__ = "token_invitacion"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime)
+    revoked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    created_by_telegram_id: Mapped[int | None] = mapped_column(BigInteger)
+
+
+class AppConfig(Base):
+    """Configuración global key/value persistida en BD."""
+
+    __tablename__ = "app_config"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class PJEnEspera(Base):
     __tablename__ = "pjs_en_espera"
     __table_args__ = (
@@ -198,4 +238,28 @@ class PJEnEspera(Base):
     id_pj: Mapped[int] = mapped_column(ForeignKey("pj.id"), nullable=False)
     id_sesion: Mapped[int] = mapped_column(ForeignKey("sesion.id"), nullable=False)
     asistencia_segura: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true")
+    created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+
+
+class SuscripcionPremisa(Base):
+    """Suscripción de una Persona a una Premisa.
+
+    Cuando se publica una sesión one-shot con esa premisa o la primera
+    sesión de una campaña con esa premisa, se notifica al suscriptor.
+    """
+
+    __tablename__ = "suscripcion_premisa"
+    __table_args__ = (
+        UniqueConstraint(
+            "id_persona", "id_premisa", name="uq_suscripcion_persona_premisa"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    id_persona: Mapped[int] = mapped_column(
+        ForeignKey("personas.id", ondelete="CASCADE"), nullable=False
+    )
+    id_premisa: Mapped[int] = mapped_column(
+        ForeignKey("premisa.id", ondelete="CASCADE"), nullable=False
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

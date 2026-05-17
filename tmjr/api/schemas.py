@@ -33,13 +33,11 @@ class DMOut(_ORM):
 
 
 class PJIn(BaseModel):
-    nombre: str = Field(min_length=1, max_length=100)
     descripcion: str | None = None
 
 
 class PJOut(_ORM):
     id: int
-    nombre: str
     descripcion: str | None
     created_at: datetime
 
@@ -48,7 +46,8 @@ class SesionIn(BaseModel):
     id_dm: int
     id_juego: int                      # required: toda sesión tiene sistema
     fecha: datetime
-    plazas_totales: int = Field(default=5, ge=1, le=6)
+    plazas_totales: int = Field(default=5, ge=1, le=10)
+    plazas_minimas: int = Field(default=0, ge=0, le=10)
     plazas_sin_reserva: int = Field(default=1, ge=0)
     nombre: str | None = Field(default=None, max_length=100)
     descripcion: str | None = Field(default=None, max_length=400)
@@ -63,6 +62,7 @@ class SesionOut(_ORM):
     id_juego: int | None
     fecha: datetime
     plazas_totales: int
+    plazas_minimas: int
     plazas_sin_reserva: int
     nombre: str | None
     descripcion: str | None

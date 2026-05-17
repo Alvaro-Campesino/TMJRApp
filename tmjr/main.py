@@ -20,6 +20,7 @@ from tmjr.api.personas import router as personas_router
 from tmjr.api.sesiones import router as sesiones_router
 from tmjr.bot.app import build_application, post_initialize
 from tmjr.config import get_settings
+from tmjr.scheduler import build_scheduler
 from tmjr.version import __version__ as APP_VERSION
 
 # Asegura que los logs propios (no solo los de uvicorn) salgan por stdout.
@@ -130,9 +131,17 @@ async def lifespan(app: FastAPI):
             )
 
     app.state.ptb = application
+
+    scheduler = build_scheduler(application.bot)
+    if scheduler is not None:
+        scheduler.start()
+        app.state.scheduler = scheduler
+
     try:
         yield
     finally:
+        if scheduler is not None:
+            scheduler.shutdown(wait=False)
         await application.stop()
         await application.shutdown()
 

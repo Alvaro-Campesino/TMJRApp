@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     telegram_chat_id: str | None = None
     telegram_thread_id: int | None = None
 
+    # CSV de IDs admin. Lo guardamos como `str` crudo para sortear el
+    # JSON-parsing que pydantic-settings aplica a fields tipados como
+    # `list[int]` antes de invocar a `field_validator` (un único valor sin
+    # comas, p.ej. `ADMIN_TELEGRAM_IDS=19928592`, es JSON int válido y
+    # explotaba en runtime). El parsing real se hace en la property.
+    admin_telegram_ids_raw: str | None = Field(
+        default=None, validation_alias="ADMIN_TELEGRAM_IDS"
+    )
+    token_rotation_days: int | None = None
+
     @field_validator(
         "telegram_token",
         "telegram_webhook_url",
@@ -33,11 +43,24 @@ class Settings(BaseSettings):
         "telegram_webhook_cert_file",
         "telegram_chat_id",
         "telegram_thread_id",
+        "token_rotation_days",
+        "admin_telegram_ids_raw",
         mode="before",
     )
     @classmethod
     def _blank_string_is_none(cls, v):
         return _empty_to_none(v)
+
+    @property
+    def admin_telegram_ids(self) -> list[int]:
+        """Lista de IDs admin parseada del CSV en `ADMIN_TELEGRAM_IDS`."""
+        if not self.admin_telegram_ids_raw:
+            return []
+        return [
+            int(x.strip())
+            for x in self.admin_telegram_ids_raw.split(",")
+            if x.strip()
+        ]
 
 
 @lru_cache(maxsize=1)

@@ -6,10 +6,10 @@ Desaparece al pulsar -1, al desapuntarse el anfitrión o al borrar la
 sesión.
 
 Comportamiento:
-  - mas1: si el usuario no tiene Persona/PJ, deep-link a /start
-    apuntar_<id> igual que el botón Apuntarse. Si lo tiene pero no está
-    apuntado a la sesión, toast pidiendo apuntarse primero. Si lo está,
-    suma 1 acompañante y republica la tarjeta.
+  - mas1: si el usuario no tiene Persona/PJ, toast redirigiéndolo al pin
+    del canal para registrarse con el token de invitación (REU-45). Si
+    está registrado pero no apuntado, toast pidiendo apuntarse primero.
+    Si está apuntado, suma 1 acompañante y republica la tarjeta.
   - menos1: resta 1 acompañante al anfitrión. Si no tenía, toast
     informativo.
 
@@ -22,7 +22,7 @@ from telegram import Update
 from telegram.error import TelegramError
 from telegram.ext import ContextTypes
 
-from tmjr.bot.object_links import get_bot_username
+from tmjr.bot.notificaciones import notificar_cruce_minimo_si_aplica
 from tmjr.bot.publicador import publicar_sesion
 from tmjr.db import async_session_maker
 from tmjr.db.models import Premisa, Sesion
@@ -58,20 +58,16 @@ async def mas1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     async with async_session_maker() as session:
         persona = await personas_svc.get_persona_by_telegram(session, user.id)
         if persona is None or persona.id_pj is None:
-            # Mismo recurso que en unirse: deep-link al chat para registrarse.
-            bot_username = get_bot_username()
-            if bot_username is not None:
-                await query.answer(
-                    text="Necesitas registrarte para traer invitados.",
-                    url=f"https://t.me/{bot_username}?start=apuntar_{sesion_id}",
-                )
-            else:
-                await query.answer(
-                    "Primero usa /start en privado conmigo y vuelve a intentarlo.",
-                    show_alert=True,
-                )
+            await query.answer(
+                "🔒 Aún no estás registrado. Pulsa el botón del mensaje "
+                "fijado del canal para unirte al bot.",
+                show_alert=True,
+            )
             return
 
+        ocupadas_antes = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
         try:
             await sesiones_svc.add_invitado(
                 session,
@@ -91,9 +87,17 @@ async def mas1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             return
 
         sesion = await session.get(Sesion, sesion_id)
+        ocupadas_despues = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
 
     await query.answer(f"✅ Invitado añadido: Invitado-{persona.nombre[:11]}")
     await _republicar(context, sesion)
+    await notificar_cruce_minimo_si_aplica(
+        context.bot, sesion,
+        ocupadas_antes=ocupadas_antes,
+        ocupadas_despues=ocupadas_despues,
+    )
 
 
 async def menos1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -110,10 +114,16 @@ async def menos1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             )
             return
 
+        ocupadas_antes = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
         removed = await sesiones_svc.remove_ultimo_invitado(
             session, sesion_id=sesion_id, anfitrion_pj_id=persona.id_pj
         )
         sesion = await session.get(Sesion, sesion_id)
+        ocupadas_despues = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
 
     if not removed:
         await query.answer(
@@ -122,3 +132,8 @@ async def menos1(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     await query.answer("✅ Invitado eliminado.")
     await _republicar(context, sesion)
+    await notificar_cruce_minimo_si_aplica(
+        context.bot, sesion,
+        ocupadas_antes=ocupadas_antes,
+        ocupadas_despues=ocupadas_despues,
+    )

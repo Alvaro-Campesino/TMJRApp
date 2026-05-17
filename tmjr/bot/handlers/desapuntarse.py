@@ -9,6 +9,7 @@ from __future__ import annotations
 from telegram import Update
 from telegram.ext import ContextTypes
 
+from tmjr.bot.notificaciones import notificar_cruce_minimo_si_aplica
 from tmjr.bot.publicador import publicar_sesion
 from tmjr.db import async_session_maker
 from tmjr.db.models import Premisa, Sesion
@@ -35,6 +36,9 @@ async def desapuntarse(
             await query.answer("No estás apuntado a esta sesión.", show_alert=True)
             return
 
+        ocupadas_antes = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
         try:
             await sesiones_svc.desapuntar_pj(
                 session, sesion_id=sesion_id, pj_id=persona.id_pj
@@ -44,6 +48,9 @@ async def desapuntarse(
             return
 
         sesion = await session.get(Sesion, sesion_id)
+        ocupadas_despues = await sesiones_svc.plazas_ocupadas(
+            session, sesion_id
+        )
         premisa = (
             await session.get(Premisa, sesion.id_premisa)
             if sesion.id_premisa is not None
@@ -54,4 +61,9 @@ async def desapuntarse(
     await query.answer("✅ Te he borrado de la sesión.")
     await publicar_sesion(
         context.bot, sesion, premisa=premisa, jugadores=jugadores
+    )
+    await notificar_cruce_minimo_si_aplica(
+        context.bot, sesion,
+        ocupadas_antes=ocupadas_antes,
+        ocupadas_despues=ocupadas_despues,
     )

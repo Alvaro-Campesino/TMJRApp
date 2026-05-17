@@ -28,6 +28,7 @@ from telegram.ext import (
     filters,
 )
 
+from tmjr.bot.keyboards import picker_duplicados
 from tmjr.bot.states import CrearPremisa
 from tmjr.db import async_session_maker
 from tmjr.services import juegos as juegos_svc
@@ -114,7 +115,12 @@ async def _ask_nombre(update: Update) -> None:
 
 
 async def premisa_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Recibe y valida el título de la premisa, pasa al estado DESC."""
+    """Recibe y valida el título de la premisa.
+
+    Antes de aceptar, busca premisas similares en el catálogo. Si hay
+    candidatos (≥ umbral), muestra picker para que el usuario reuse uno
+    o confirme la creación pese a la sospecha de duplicado.
+    """
     nombre = (update.effective_message.text or "").strip()
     if not nombre or len(nombre) > 100:
         await update.effective_message.reply_text(
@@ -123,10 +129,68 @@ async def premisa_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return CrearPremisa.NOMBRE
     context.user_data["premisa_nombre"] = nombre
 
+    async with async_session_maker() as session:
+        similares = await premisas_svc.buscar_premisas_similares(session, nombre)
+
+    if similares:
+        await update.effective_message.reply_text(
+            f"Hay premisas parecidas a <b>{nombre}</b> en el catálogo. "
+            "Si quieres reusar una, púlsala. Si no, crea igualmente:",
+            parse_mode="HTML",
+            reply_markup=picker_duplicados(
+                similares,
+                prefix_existente="cpremdup",
+                callback_crear_igual="cpremdup_crear",
+            ),
+        )
+        return CrearPremisa.CONFIRMAR_DUP_PREMISA
+
     await update.effective_message.reply_text(
         "Descripción breve de la premisa (≤400 caracteres) o /skip si no quieres añadir."
     )
     return CrearPremisa.DESC
+
+
+async def premisa_resolver_dup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Procesa el picker de duplicados de premisa.
+
+    - `cpremdup_crear` → continuar al estado DESC ignorando la advertencia.
+    - `cpremdup_<id>`  → enlazar esa premisa al DM y cerrar el flujo.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cpremdup_crear":
+        await query.edit_message_text(
+            f"De acuerdo, creo <b>{context.user_data['premisa_nombre']}</b> "
+            "como nueva.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            "Descripción breve de la premisa (≤400 caracteres) o /skip "
+            "si no quieres añadir."
+        )
+        return CrearPremisa.DESC
+
+    premisa_id = int(query.data.removeprefix("cpremdup_"))
+    persona_id = context.user_data["persona_id"]
+    async with async_session_maker() as session:
+        persona = await personas_svc.get_persona(session, persona_id)
+        premisa = await premisas_svc.get_premisa(session, premisa_id)
+        if premisa is None:
+            await query.edit_message_text("Esa premisa ya no existe.")
+            return END
+        await premisas_svc.link_premisa_to_dm(
+            session, id_dm=persona.id_master, id_premisa=premisa.id
+        )
+    await query.edit_message_text(
+        f"✅ Reutilizo <b>{premisa.nombre}</b> y la añado a tu lista. "
+        "No creo una nueva.",
+        parse_mode="HTML",
+    )
+    return END
 
 
 async def premisa_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -234,12 +298,68 @@ async def nuevo_juego_nombre(
             )
             return await _crear_y_enlazar(update, context)
 
+        similares = await juegos_svc.buscar_juegos_similares(session, nombre)
+
+    if similares:
+        await update.effective_message.reply_text(
+            f"Hay juegos parecidos a <b>{nombre}</b> en el catálogo. "
+            "Si quieres reusar uno, púlsalo. Si no, créalo igualmente:",
+            parse_mode="HTML",
+            reply_markup=picker_duplicados(
+                similares,
+                prefix_existente="cpremjdup",
+                callback_crear_igual="cpremjdup_crear",
+            ),
+        )
+        return CrearPremisa.CONFIRMAR_DUP_JUEGO
+
     await update.effective_message.reply_text(
         f"'{nombre}' no está en el catálogo global. "
         "¿Lo creo y lo añado a tu lista?",
         reply_markup=_confirmar_juego_nuevo_premisa(nombre),
     )
     return CrearPremisa.CONFIRMAR_NUEVO_JUEGO
+
+
+async def juego_resolver_dup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Procesa el picker de duplicados de juego (subflujo crear_premisa).
+
+    - `cpremjdup_crear` → confirmar creación del juego nuevo.
+    - `cpremjdup_<id>`  → enlazar al DM y seguir a crear la premisa con
+      ese juego ya elegido.
+    """
+    query = update.callback_query
+    await query.answer()
+    nombre = context.user_data["nuevo_juego_nombre"]
+
+    if query.data == "cpremjdup_crear":
+        await query.edit_message_text(
+            f"'{nombre}' no está en el catálogo global. "
+            "¿Lo creo y lo añado a tu lista?",
+            reply_markup=_confirmar_juego_nuevo_premisa(nombre),
+        )
+        return CrearPremisa.CONFIRMAR_NUEVO_JUEGO
+
+    juego_id = int(query.data.removeprefix("cpremjdup_"))
+    persona_id = context.user_data["persona_id"]
+    async with async_session_maker() as session:
+        from tmjr.db.models import Juego
+        juego = await session.get(Juego, juego_id)
+        if juego is None:
+            await query.edit_message_text("Ese juego ya no existe.")
+            return END
+        persona = await personas_svc.get_persona(session, persona_id)
+        await juegos_svc.add_juego_to_dm(
+            session, id_dm=persona.id_master, id_juego=juego.id
+        )
+    context.user_data["juego_id"] = juego.id
+    await query.edit_message_text(
+        f"✅ Reutilizo <b>{juego.nombre}</b> y lo añado a tu lista.",
+        parse_mode="HTML",
+    )
+    return await _crear_y_enlazar(update, context)
 
 
 async def confirmar_nuevo_juego(
@@ -325,6 +445,11 @@ def build_handler() -> ConversationHandler:
             CrearPremisa.NOMBRE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, premisa_nombre),
             ],
+            CrearPremisa.CONFIRMAR_DUP_PREMISA: [
+                CallbackQueryHandler(
+                    premisa_resolver_dup, pattern=r"^cpremdup_"
+                ),
+            ],
             CrearPremisa.DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, premisa_desc),
                 CommandHandler("skip", premisa_desc),
@@ -334,6 +459,11 @@ def build_handler() -> ConversationHandler:
             ],
             CrearPremisa.NUEVO_JUEGO_NOMBRE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_juego_nombre),
+            ],
+            CrearPremisa.CONFIRMAR_DUP_JUEGO: [
+                CallbackQueryHandler(
+                    juego_resolver_dup, pattern=r"^cpremjdup_"
+                ),
             ],
             CrearPremisa.CONFIRMAR_NUEVO_JUEGO: [
                 CallbackQueryHandler(

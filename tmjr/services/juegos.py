@@ -5,6 +5,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from tmjr.db.models import DM, DMJuego, Juego
+from tmjr.services import text_match
 
 
 async def list_all_juegos(session: AsyncSession) -> list[Juego]:
@@ -41,6 +42,28 @@ async def find_juego_by_name(session: AsyncSession, nombre: str) -> Juego | None
         select(Juego).where(func.lower(Juego.nombre) == nombre.strip().lower())
     )
     return result.scalar_one_or_none()
+
+
+async def buscar_juegos_similares(
+    session: AsyncSession,
+    nombre: str,
+    *,
+    score_cutoff: int = text_match.SIMILARITY_THRESHOLD,
+    limit: int = 5,
+) -> list[tuple[int, str, int]]:
+    """Juegos del catálogo cuyo nombre parece duplicado de `nombre`.
+
+    Filtra (id, nombre, score) por `score_cutoff` con
+    `text_match.buscar_similares`. Útil antes de crear uno nuevo: si
+    devuelve algo, presentar los candidatos al usuario.
+    """
+    todos = await list_all_juegos(session)
+    return text_match.buscar_similares(
+        [(j.id, j.nombre) for j in todos],
+        nombre,
+        score_cutoff=score_cutoff,
+        limit=limit,
+    )
 
 
 async def create_juego(

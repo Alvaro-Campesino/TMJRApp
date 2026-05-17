@@ -17,7 +17,7 @@ async def _crear_pj(client, telegram_id: int) -> int:
         "/personas", json={"telegram_id": telegram_id, "nombre": f"PJ{telegram_id}"}
     )).json()
     pj = (await client.post(
-        f"/personas/{persona['id']}/pj", json={"nombre": f"Personaje{telegram_id}"}
+        f"/personas/{persona['id']}/pj", json={}
     )).json()
     return pj["id"]
 
@@ -81,16 +81,26 @@ async def test_post_sesiones_descripcion_demasiado_larga_422(client):
 async def test_post_sesiones_validacion_plazas(client):
     id_dm = await _crear_dm(client, 1100)
     id_juego = await _crear_juego(client, "JuegoApi2")
+    # 0 plazas → 422 (mínimo válido = 1)
     r = await client.post(
         "/sesiones",
         json={"id_dm": id_dm, "id_juego": id_juego,
               "fecha": "2030-04-04", "plazas_totales": 0},
     )
     assert r.status_code == 422
+    # 11 plazas → 422 (máximo válido = 10)
     r = await client.post(
         "/sesiones",
         json={"id_dm": id_dm, "id_juego": id_juego,
-              "fecha": "2030-04-04", "plazas_totales": 7},
+              "fecha": "2030-04-04", "plazas_totales": 11},
+    )
+    assert r.status_code == 422
+    # plazas_minimas > plazas_totales → 422 (lo lanza el service como ValueError)
+    r = await client.post(
+        "/sesiones",
+        json={"id_dm": id_dm, "id_juego": id_juego,
+              "fecha": "2030-04-04",
+              "plazas_totales": 4, "plazas_minimas": 5},
     )
     assert r.status_code == 422
 

@@ -35,6 +35,7 @@ from tmjr.bot.keyboards import (
     confirmar_juego_premisa,
     elegir_nombre_sesion,
     juegos_del_dm,
+    picker_duplicados,
     picker_hora,
     picker_minutos,
     picker_premisas_sesion,
@@ -285,10 +286,89 @@ async def premisa_nombre(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return CrearSesion.PREMISA_NOMBRE
     context.user_data["premisa_nombre"] = nombre
 
+    async with async_session_maker() as session:
+        similares = await premisas_svc.buscar_premisas_similares(session, nombre)
+
+    if similares:
+        await update.effective_message.reply_text(
+            f"Hay premisas parecidas a <b>{nombre}</b> en el catálogo. "
+            "Si quieres reusar una, púlsala. Si no, crea igualmente:",
+            parse_mode="HTML",
+            reply_markup=picker_duplicados(
+                similares,
+                prefix_existente="csdupprem",
+                callback_crear_igual="csdupprem_crear",
+            ),
+        )
+        return CrearSesion.CONFIRMAR_DUP_PREMISA
+
     await update.effective_message.reply_text(
         "Descripción breve de la Premisa que estás creando (≤400 caracteres) o /skip si no quieres añadir."
     )
     return CrearSesion.PREMISA_DESC
+
+
+async def premisa_resolver_dup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Picker de duplicados de premisa en el flujo de crear_sesion.
+
+    - `csdupprem_crear` → continuar al estado PREMISA_DESC ignorando.
+    - `csdupprem_<id>`  → reusar esa premisa (idéntico a haber elegido
+      una del listado "Mis premisas"): registra `premisa_existente_id`,
+      hereda el juego si lo tiene, y avanza al estado correspondiente.
+    """
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "csdupprem_crear":
+        await query.edit_message_text(
+            f"De acuerdo, creo <b>{context.user_data['premisa_nombre']}</b> "
+            "como nueva.",
+            parse_mode="HTML",
+        )
+        await update.effective_message.reply_text(
+            "Descripción breve de la Premisa que estás creando "
+            "(≤400 caracteres) o /skip si no quieres añadir."
+        )
+        return CrearSesion.PREMISA_DESC
+
+    premisa_id = int(query.data.removeprefix("csdupprem_"))
+    persona_id = context.user_data["persona_id"]
+    async with async_session_maker() as session:
+        persona = await personas_svc.get_persona(session, persona_id)
+        premisa = await premisas_svc.get_premisa(session, premisa_id)
+        if premisa is None:
+            await query.edit_message_text("Esa premisa ya no existe.")
+            return END
+        await premisas_svc.link_premisa_to_dm(
+            session, id_dm=persona.id_master, id_premisa=premisa.id
+        )
+        juego = None
+        if premisa.id_juego is not None:
+            from tmjr.db.models import Juego
+            juego = await session.get(Juego, premisa.id_juego)
+
+    context.user_data["premisa_existente_id"] = premisa.id
+    context.user_data["premisa_nombre"] = premisa.nombre
+    context.user_data["juego_id"] = premisa.id_juego
+
+    await query.edit_message_text(
+        f"✅ Reutilizo <b>{premisa.nombre}</b>.", parse_mode="HTML"
+    )
+
+    if juego is not None:
+        await update.effective_message.reply_text(
+            f"🎮 Juego heredado de la premisa: *{juego.nombre}*",
+            parse_mode="Markdown",
+            reply_markup=confirmar_juego_premisa(juego.nombre),
+        )
+        return CrearSesion.CONFIRMAR_JUEGO
+
+    await update.effective_message.reply_text(
+        "Esta premisa no tiene un juego asociado. Vamos a elegir uno."
+    )
+    return await _ask_juego(update, context)
 
 
 async def premisa_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -390,6 +470,21 @@ async def nuevo_juego_nombre(
             )
             return CrearSesion.SESION_NOMBRE_PICK
 
+        similares = await juegos_svc.buscar_juegos_similares(session, nombre)
+
+    if similares:
+        await update.effective_message.reply_text(
+            f"Hay juegos parecidos a <b>{nombre}</b> en el catálogo. "
+            "Si quieres reusar uno, púlsalo. Si no, créalo igualmente:",
+            parse_mode="HTML",
+            reply_markup=picker_duplicados(
+                similares,
+                prefix_existente="csdupjue",
+                callback_crear_igual="csdupjue_crear",
+            ),
+        )
+        return CrearSesion.CONFIRMAR_DUP_JUEGO
+
     # No existe → confirmar antes de crear.
     await update.effective_message.reply_text(
         f"'{nombre}' no está en el catálogo global. "
@@ -397,6 +492,49 @@ async def nuevo_juego_nombre(
         reply_markup=confirmar_juego_nuevo(nombre),
     )
     return CrearSesion.CONFIRMAR_NUEVO_JUEGO
+
+
+async def juego_resolver_dup(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Picker de duplicados de juego en el subflujo crear_sesion.
+
+    - `csdupjue_crear` → confirmar creación del juego nuevo.
+    - `csdupjue_<id>`  → enlazar al DM, seguir a nombre de sesión.
+    """
+    query = update.callback_query
+    await query.answer()
+    nombre = context.user_data["nuevo_juego_nombre"]
+
+    if query.data == "csdupjue_crear":
+        await query.edit_message_text(
+            f"'{nombre}' no está en el catálogo global. "
+            "¿Lo creo y lo añado a tu lista?",
+            reply_markup=confirmar_juego_nuevo(nombre),
+        )
+        return CrearSesion.CONFIRMAR_NUEVO_JUEGO
+
+    juego_id = int(query.data.removeprefix("csdupjue_"))
+    persona_id = context.user_data["persona_id"]
+    async with async_session_maker() as session:
+        from tmjr.db.models import Juego
+        juego = await session.get(Juego, juego_id)
+        if juego is None:
+            await query.edit_message_text("Ese juego ya no existe.")
+            return END
+        persona = await personas_svc.get_persona(session, persona_id)
+        await juegos_svc.add_juego_to_dm(
+            session, id_dm=persona.id_master, id_juego=juego.id
+        )
+    context.user_data["juego_id"] = juego.id
+    await query.edit_message_text(
+        f"✅ Reutilizo <b>{juego.nombre}</b> y lo añado a tu lista.",
+        parse_mode="HTML",
+    )
+    await _ask_nombre_sesion(
+        update.effective_message, context.user_data["premisa_nombre"]
+    )
+    return CrearSesion.SESION_NOMBRE_PICK
 
 
 async def confirmar_nuevo_juego(
@@ -576,22 +714,52 @@ async def minutos_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         f"📅 Fecha y hora: *{fecha_dt.strftime('%Y-%m-%d %H:%M')}*",
         parse_mode="Markdown",
     )
-    await query.message.reply_text("¿Cuántas plazas? (1-6)")
+    await query.message.reply_text("¿Cuántas plazas máximas? (1-10)")
     return CrearSesion.PLAZAS
 
 
 async def plazas(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Valida el número de plazas y pasa a preguntar por el lugar."""
+    """Valida el número de plazas y pasa a preguntar por el mínimo."""
     raw = (update.effective_message.text or "").strip()
     try:
         n = int(raw)
-        assert 1 <= n <= 6
+        assert 1 <= n <= 10
     except (ValueError, AssertionError):
         await update.effective_message.reply_text(
-            "Tiene que ser un número entre 1 y 6."
+            "Tiene que ser un número entre 1 y 10."
         )
         return CrearSesion.PLAZAS
     context.user_data["plazas"] = n
+
+    await update.effective_message.reply_text(
+        f"¿Cuántas plazas mínimas para que la sesión se haga? "
+        f"(0-{n}, o /skip para 0 = sin mínimo)"
+    )
+    return CrearSesion.PLAZAS_MINIMAS
+
+
+async def plazas_minimas(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    """Valida el mínimo (0..plazas) y pasa a preguntar por el lugar.
+
+    `/skip` o `0` significa "sin mínimo" — la sesión nunca dispara
+    notificación de mínimo alcanzado.
+    """
+    raw = (update.effective_message.text or "").strip()
+    plazas_max = context.user_data["plazas"]
+    if raw.lower() in {"/skip", ""}:
+        n_min = 0
+    else:
+        try:
+            n_min = int(raw)
+            assert 0 <= n_min <= plazas_max
+        except (ValueError, AssertionError):
+            await update.effective_message.reply_text(
+                f"Tiene que ser un número entre 0 y {plazas_max}."
+            )
+            return CrearSesion.PLAZAS_MINIMAS
+    context.user_data["plazas_minimas"] = n_min
 
     await _ask_lugar(update.effective_message)
     return CrearSesion.LUGAR_RESPUESTA
@@ -711,6 +879,7 @@ async def sesion_desc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
             id_juego=juego_id,
             fecha=context.user_data["fecha"],
             plazas_totales=n,
+            plazas_minimas=context.user_data.get("plazas_minimas", 0),
             nombre=sesion_nombre,
             descripcion=sesion_desc_text,
             lugar=lugar,
@@ -846,6 +1015,11 @@ def build_handler() -> ConversationHandler:
             CrearSesion.PREMISA_NOMBRE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, premisa_nombre),
             ],
+            CrearSesion.CONFIRMAR_DUP_PREMISA: [
+                CallbackQueryHandler(
+                    premisa_resolver_dup, pattern=r"^csdupprem_"
+                ),
+            ],
             CrearSesion.PREMISA_DESC: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, premisa_desc),
                 CommandHandler("skip", premisa_desc),
@@ -855,6 +1029,11 @@ def build_handler() -> ConversationHandler:
             ],
             CrearSesion.NUEVO_JUEGO_NOMBRE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, nuevo_juego_nombre),
+            ],
+            CrearSesion.CONFIRMAR_DUP_JUEGO: [
+                CallbackQueryHandler(
+                    juego_resolver_dup, pattern=r"^csdupjue_"
+                ),
             ],
             CrearSesion.CONFIRMAR_NUEVO_JUEGO: [
                 CallbackQueryHandler(
@@ -884,6 +1063,10 @@ def build_handler() -> ConversationHandler:
             ],
             CrearSesion.PLAZAS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, plazas),
+            ],
+            CrearSesion.PLAZAS_MINIMAS: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, plazas_minimas),
+                CommandHandler("skip", plazas_minimas),
             ],
             CrearSesion.LUGAR_RESPUESTA: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, lugar_respuesta),

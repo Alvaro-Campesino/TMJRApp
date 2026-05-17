@@ -57,33 +57,35 @@ async def test_ensure_dm_es_idempotente(session):
 
 
 async def test_ensure_pj_crea_y_enlaza(session):
-    persona, _ = await svc.get_or_create_persona(session, telegram_id=3, nombre="PJ")
-    pj = await svc.ensure_pj(session, persona, nombre="Aria", descripcion="hechicera")
+    """El PJ se crea sin nombre propio — el nombre vive en Persona."""
+    persona, _ = await svc.get_or_create_persona(session, telegram_id=3, nombre="Aria")
+    pj = await svc.ensure_pj(session, persona, descripcion="hechicera")
 
     assert pj.id is not None
-    assert pj.nombre == "Aria"
+    assert pj.descripcion == "hechicera"
     persona_db = (
         await session.execute(select(Persona).where(Persona.id == persona.id))
     ).scalar_one()
     assert persona_db.id_pj == pj.id
+    assert persona_db.nombre == "Aria"  # el nombre del PJ ES éste
 
 
 async def test_ensure_pj_es_idempotente(session):
     persona, _ = await svc.get_or_create_persona(session, telegram_id=4, nombre="PJ4")
-    pj1 = await svc.ensure_pj(session, persona, nombre="X")
-    pj2 = await svc.ensure_pj(session, persona, nombre="OTRO")
+    pj1 = await svc.ensure_pj(session, persona)
+    pj2 = await svc.ensure_pj(session, persona, descripcion="otra")
     assert pj1.id == pj2.id
 
     rows = (await session.execute(select(PJ))).scalars().all()
     assert len(rows) == 1
-    # Mantiene el nombre original
-    assert pj2.nombre == "X"
+    # Segunda llamada con descripcion la sobreescribe
+    assert pj2.descripcion == "otra"
 
 
 async def test_persona_puede_ser_dm_y_pj_a_la_vez(session):
     persona, _ = await svc.get_or_create_persona(session, telegram_id=5, nombre="Dual")
     dm = await svc.ensure_dm(session, persona)
-    pj = await svc.ensure_pj(session, persona, nombre="Dual-PJ")
+    pj = await svc.ensure_pj(session, persona)
 
     persona_db = await svc.get_persona(session, persona.id)
     assert persona_db.id_master == dm.id
